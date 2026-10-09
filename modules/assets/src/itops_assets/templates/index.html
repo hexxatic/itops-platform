@@ -1,0 +1,18 @@
+{% extends "core/shell.html" %}
+{% import "core/components.html" as ui %}
+{% block content %}
+{% call ui.page_header("Assets", "IT inventory: devices, certificates, contacts, locations, domains and IP addresses.") %}
+  {{ ui.button("Search", href="/search") }}
+  {% if can_manage_types %}{{ ui.button("Manage types", href="/assets/types") }}{% endif %}
+{% endcall %}
+{% if error %}{{ ui.alert(error, "danger") }}{% endif %}
+{% if pending %}
+  {% call ui.card("Waiting for approval") %}
+    <p>{{ pending }} proposed change{{ "s" if pending != 1 }} from AI {{ "are" if pending != 1 else "is" }} waiting for a person to approve or reject.</p>
+    <div class="actions">{{ ui.button("Review proposals", href="/assets/proposals", variant="primary") }}</div>
+  {% endcall %}
+{% endif %}
+{% call ui.card() %}
+  {{ ui.table([("type", "Type"), ("count", "Records"), ("about", "About")], rows, empty="No asset types yet.") }}
+{% endcall %}
+{% endblock %}

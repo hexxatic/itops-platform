@@ -1,0 +1,35 @@
+{% extends "core/shell.html" %}
+{% import "core/components.html" as ui %}
+{% block content %}
+{{ ui.breadcrumb([("Tools", "/tools"), (title, "/tools/" ~ run.action if action else None), ("Run " ~ run.id, None)]) }}
+{% call ui.page_header(title ~ ": run " ~ run.id, "Started " ~ started ~ " by " ~ run.started_by_name ~ ((" · " ~ inputs) if inputs else "") ~ (" · from a request" if run.request_id else "")) %}
+  {% if action %}{{ ui.button("Back to " ~ title, href="/tools/" ~ run.action) }}{% endif %}
+  {% if run.status == "running" and can_cancel %}
+    {{ ui.action_button("Cancel", "/tools/runs/" ~ run.id ~ "/cancel", variant="danger", confirm="Cancel this run? It stops at its next step.") }}
+  {% endif %}
+{% endcall %}
+{% if error %}{{ ui.alert(error, "warning") }}{% endif %}
+{% if notice %}{{ ui.alert(notice, "info") }}{% endif %}
+
+{% if run.status == "running" %}
+{% include "core/tool_progress.html" %}
+{% else %}
+{% call ui.card("Outcome") %}
+<div class="row meta-row">
+  {{ ui.badge(status.badge, status.tone) }}
+  <span class="muted">{{ run.summary }}{% if finished %} · finished {{ finished }} · took {{ run.duration }}{% endif %}</span>
+</div>
+{% if counts %}{{ ui.table([("outcome", "Outcome"), ("count", "Count")], counts) }}{% endif %}
+{% endcall %}
+{% if run.problems %}
+{% call ui.card("Problems (" ~ run.problems|length ~ ")") %}
+  {{ ui.table([("item", "Item"), ("text", "Problem")], run.problems) }}
+{% endcall %}
+{% endif %}
+{% if run.log %}
+{% call ui.card("Output (" ~ log_lines ~ " line" ~ ("s" if log_lines != 1) ~ ")") %}
+<pre class="run-log">{{ run.log }}</pre>
+{% endcall %}
+{% endif %}
+{% endif %}
+{% endblock %}

@@ -1,0 +1,20 @@
+{% extends "core/shell.html" %}
+{% import "core/components.html" as ui %}
+{% block content %}
+{{ ui.page_header("Delete: " ~ col.name, "Deleting a collection never deletes documents.") }}
+{% if error %}{{ ui.alert(error, "danger") }}{% endif %}
+{% call ui.card() %}
+<form method="post" action="/api/docs/collections/{{ col.slug }}/delete" class="stack">
+  {% if count %}
+    <p>“{{ col.name }}” has <strong>{{ count }}</strong> document{{ "s" if count != 1 }}, archived ones included. They move to the collection you choose, then this one is deleted.</p>
+    {{ ui.select("move_to", "Move its documents to", others, required=True) }}
+  {% else %}
+    <p>“{{ col.name }}” is empty.</p>
+  {% endif %}
+  <div class="row">
+    {{ ui.button("Delete collection", type="submit", variant="danger") }}
+    {{ ui.button("Cancel", href="/docs/collections", variant="ghost") }}
+  </div>
+</form>
+{% endcall %}
+{% endblock %}

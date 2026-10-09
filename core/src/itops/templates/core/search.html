@@ -1,0 +1,7 @@
+{% extends "core/shell.html" %}
+{% import "core/components.html" as ui %}
+{% block content %}
+{{ ui.page_header("Search", "Everything published in IT-Ops that you can read.") }}
+{{ ui.search_box("/search", query, "Search everything", archived=archived, live=True) }}
+{{ ui.search_results(hits, query, show_module=True, modules=module_titles) }}
+{% endblock %}

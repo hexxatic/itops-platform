@@ -1,0 +1,60 @@
+{% extends "core/shell.html" %}
+{% import "core/components.html" as ui %}
+{% block content %}
+{{ ui.breadcrumb([("Docs", "/docs/"), (collection.name, "/docs/c/" ~ collection.slug), (doc.title, None)]) }}
+{% call ui.page_header(doc.title) %}
+  {% set publishing = can_publish and doc.status != "archived" and (showing_draft or pending_draft) %}
+  {% if can_write %}{{ ui.button("Edit", href="/docs/d/" ~ doc.slug ~ "/edit", variant="secondary" if publishing else "primary") }}{% endif %}
+  {% if can_publish %}
+    {% if doc.status == "archived" %}
+      {{ ui.action_button("Restore", "/api/docs/documents/" ~ doc.slug ~ "/restore") }}
+    {% else %}
+      {% if showing_draft or pending_draft %}
+        {{ ui.action_button("Publish", "/api/docs/documents/" ~ doc.slug ~ "/publish", variant="primary") }}
+        {{ ui.action_button("Discard draft", "/api/docs/documents/" ~ doc.slug ~ "/discard", variant="danger",
+                            confirm="Throw away the unpublished changes?" if pending_draft else "Delete this never-published document?") }}
+      {% endif %}
+      {% if doc.current_version_id %}
+        {{ ui.action_button("Archive", "/api/docs/documents/" ~ doc.slug ~ "/archive",
+                            confirm="Hide this document from browsing and search? It can be restored.") }}
+      {% endif %}
+    {% endif %}
+  {% endif %}
+{% endcall %}
+{% if error %}{{ ui.alert(error, "danger") }}{% endif %}
+
+<div class="row meta-row">
+  {{ ui.badge(doc.status.capitalize(), status_tone) }}
+  {% if type_name %}{{ ui.badge(type_name, "neutral") }}{% endif %}
+  {% for t in tags %}{{ ui.badge(t, "info") }}{% endfor %}
+  {% if next_review %}<span class="muted">Review by {{ next_review }}</span>{% endif %}
+</div>
+
+{% if showing_draft %}
+  {{ ui.alert("You're looking at the draft. Readers don't see it until it's published.", "warning") }}
+{% elif pending_draft %}
+  {{ ui.alert("This document has unpublished changes.", "info") }}
+  <p>{{ ui.button("Preview the draft", href="/docs/d/" ~ doc.slug ~ "?draft=1", variant="ghost") }}</p>
+{% endif %}
+{% if doc.status == "archived" %}{{ ui.alert("Archived: hidden from browsing and search.", "neutral") }}{% endif %}
+
+{% call(part) ui.reader(blocks, toc) %}
+  {% if part == "top" and definition %}
+    {% call ui.card("Details") %}{{ ui.field_values(definition, values, links) }}{% endcall %}
+  {% elif part == "side" %}
+    {% if attachments %}
+      <div id="attachments">{% call ui.card("Attachments (" ~ attachments|length ~ ")") %}{{ ui.attachment_list(attachments) }}{% endcall %}</div>
+    {% endif %}
+    {% if related_assets %}
+      {% call ui.card("Assets (" ~ related_assets|length ~ ")") %}{{ ui.link_list(related_assets) }}{% endcall %}
+    {% endif %}
+  {% elif part == "bottom" %}
+    {% call ui.disclosure("History (" ~ history|length ~ " version" ~ ("s" if history|length != 1) ~ ")") %}
+      {{ ui.table([("version", "Version"), ("state", ""), ("note", "Change"), ("author", "By"), ("when", "When")], history) }}
+    {% endcall %}
+    {% call ui.disclosure("Activity (" ~ activity|length ~ ")") %}
+      {{ ui.activity(activity) }}
+    {% endcall %}
+  {% endif %}
+{% endcall %}
+{% endblock %}

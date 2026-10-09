@@ -1,0 +1,61 @@
+{% extends "core/shell.html" %}
+{% import "core/components.html" as ui %}
+{% block content %}
+{% if mode == "new" %}
+  {{ ui.page_header("New document", "Saving creates a draft. Publishing is a separate step.") }}
+{% else %}
+  {% call ui.page_header("Edit: " ~ doc.title, "Saving creates a new draft version. Readers keep seeing the published one.") %}
+    {{ ui.button("Back to document", href="/docs/d/" ~ doc.slug) }}
+  {% endcall %}
+{% endif %}
+{% if error %}{{ ui.alert(error, "danger") }}{% endif %}
+{% if files_dropped %}{{ ui.alert("Your changes are kept below, but files can't be: choose the attachments again.", "warning") }}{% endif %}
+
+{% if mode == "new" %}
+{% if type_choices|length > 1 %}
+<div class="row type-choices" role="group" aria-label="Document type">
+  <span class="muted">Type:</span>
+  {% for c in type_choices %}{{ ui.button(c.label, href=c.href, variant="primary" if c.current else "ghost") }}{% endfor %}
+</div>
+{% endif %}
+<form method="post" action="/api/docs/documents" class="stack" enctype="multipart/form-data">
+  <input type="hidden" name="type_key" value="{{ type_key or '' }}">
+  {% call ui.card() %}
+    <div class="stack">
+      {{ ui.field("title", "Title", value=title, required=True, help="Short and specific, e.g. \"Paycom SSO configuration\".") }}
+      {{ ui.select("collection_id", "Collection", collections, selected=selected, required=True) }}
+      {{ ui.field("tags", "Tags", value=tags, help="Optional, comma separated.") }}
+    </div>
+  {% endcall %}
+  {% if definition %}
+    {% call ui.card(definition.name ~ " details") %}<div class="stack">{{ ui.field_inputs(definition, values, link_options=link_options) }}</div>{% endcall %}
+  {% endif %}
+  {{ ui.section_editor("content", content, "/api/docs/files") }}
+  {% call ui.card("Attachments") %}{{ ui.attachment_editor(attachments, max_mb=max_attachment_mb) }}{% endcall %}
+  <div class="actions">{{ ui.button("Create draft", type="submit", variant="primary") }}{{ ui.button("Cancel", href="/docs/") }}</div>
+</form>
+{% else %}
+<form method="post" action="/api/docs/documents/{{ doc.slug }}/save" class="stack" enctype="multipart/form-data">
+  {% if definition %}
+    {% call ui.card(definition.name ~ " details") %}<div class="stack">{{ ui.field_inputs(definition, values, link_options=link_options) }}</div>{% endcall %}
+  {% endif %}
+  {{ ui.section_editor("content", content, "/api/docs/files") }}
+  {% call ui.card("Attachments") %}{{ ui.attachment_editor(attachments, max_mb=max_attachment_mb) }}{% endcall %}
+  {{ ui.field("change_note", "What changed?", value=change_note, help="Optional, shown in the history.") }}
+  <div class="actions">{{ ui.button("Save draft", type="submit", variant="primary") }}{{ ui.button("Cancel", href="/docs/d/" ~ doc.slug) }}</div>
+</form>
+
+{% call ui.card("Details") %}
+<form method="post" action="/api/docs/documents/{{ doc.slug }}/details" class="stack">
+  {{ ui.field("title", "Title", value=title, required=True) }}
+  {{ ui.select("collection_id", "Collection", collections, selected=selected, required=True) }}
+  {{ ui.field("tags", "Tags", value=tags, help="Comma separated.") }}
+  {% if type_options|length > 1 %}
+  {{ ui.select("type_key", "Type", type_options, selected=type_selected) }}
+  <input type="hidden" name="change_type" value="true">
+  {% endif %}
+  <div class="actions">{{ ui.button("Save details", type="submit") }}</div>
+</form>
+{% endcall %}
+{% endif %}
+{% endblock %}

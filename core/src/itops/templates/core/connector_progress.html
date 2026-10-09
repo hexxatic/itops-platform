@@ -1,0 +1,15 @@
+{#- A running connector's progress; polls itself until the run ends (then the page reloads). -#}
+{% import "core/components.html" as ui %}
+<div id="run-progress" hx-get="/connectors/runs/{{ run.id }}/progress" hx-trigger="every 2s" hx-swap="outerHTML">
+{% call ui.card("Progress") %}
+<div class="stack">
+  {% if run.progress %}
+    {{ ui.progress("Step " ~ run.progress.number ~ ": " ~ run.progress.step, run.progress.done, run.progress.total) }}
+  {% else %}
+    {{ ui.progress("Starting") }}
+  {% endif %}
+  <p class="muted">Running for {{ run.duration }}{% if run.problems %} · {{ run.problems|length }} problem{{ "s" if run.problems|length != 1 }} so far{% endif %}. This updates by itself.</p>
+  {{ ui.table([("outcome", "Outcome"), ("count", "Records")], counts, empty="Nothing counted yet.") }}
+</div>
+{% endcall %}
+</div>

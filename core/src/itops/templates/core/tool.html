@@ -1,0 +1,48 @@
+{% extends "core/shell.html" %}
+{% import "core/components.html" as ui %}
+{% block content %}
+{{ ui.breadcrumb([("Tools", "/tools"), (action.module_title, None), (action.decl.title, None)]) }}
+{% call ui.page_header(action.decl.title, action.decl.description) %}
+  {{ ui.button("All tools", href="/tools") }}
+{% endcall %}
+{% if error %}{{ ui.alert(error, "danger") }}{% endif %}
+
+{% if running %}
+  {% call ui.alert("", "info") %}{{ action.decl.title }} is running now: started by <strong>{{ running.started_by_name }}</strong>
+    at {{ running.started_at.strftime("%H:%M") }} UTC ({{ running.duration }} ago). <a href="/tools/runs/{{ running.id }}">Watch it</a>{% endcall %}
+{% endif %}
+
+{% call ui.card("Run") %}
+<form method="post" action="/tools/{{ action.key }}/run" class="stack">
+  {% for f in fields %}{% set i = f.spec %}
+    {% if i.kind == "select" %}
+      {{ ui.select(input_prefix ~ i.key, i.label, f.options, selected=i.default, required=i.required) }}
+    {% else %}
+      {{ ui.field(input_prefix ~ i.key, i.label, value=i.default, type="number" if i.kind == "number" else "text", required=i.required, help=i.help or None) }}
+    {% endif %}
+  {% endfor %}
+  <div class="row">
+    {% if action.decl.danger != "safe" %}{{ ui.badge(action.decl.danger|capitalize, danger_tone) }}{% endif %}
+    <span class="muted">Stops after {{ action.decl.timeout }} minutes. Runs one at a time.</span>
+  </div>
+  <div class="actions">
+    {% if not can_run %}
+      <p class="muted">Starting a run is done by a person here; an AI tool can request one.</p>
+    {% elif running %}
+      {{ ui.button("Running…", type="button", attrs={"disabled": "disabled"}) }}
+    {% else %}
+      {{ ui.button("Run " ~ action.decl.title, type="submit", variant="primary",
+                   attrs={"onclick": "return window.confirm(" ~ (confirm|tojson|forceescape) ~ ")"} if confirm else {}) }}
+    {% endif %}
+  </div>
+</form>
+{% if action.decl.endpoints %}
+<p class="muted">Runs through: {{ action.decl.endpoints|join(", ") }}</p>
+{% endif %}
+{% endcall %}
+
+{% call ui.card("History") %}
+{{ ui.table([("started", "Started"), ("status", "Outcome"), ("by", "By"), ("inputs", "Inputs"), ("summary", "Summary"), ("took", "Took")],
+            history, empty="Not run yet.") }}
+{% endcall %}
+{% endblock %}

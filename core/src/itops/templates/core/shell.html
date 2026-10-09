@@ -1,0 +1,47 @@
+<!doctype html>
+{%- set look = appearance() %}
+<html lang="en"{% if look != "auto" %} data-theme="{{ look }}"{% endif %}>
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>{% if page_title %}{{ page_title }} · {% endif %}{{ brand_name }}</title>
+  {#- Root-relative paths, never url_for(): behind the IIS proxy url_for builds absolute URLs
+      from the app's internal address (http://127.0.0.1:port), which browsers can't load. -#}
+  <link rel="stylesheet" href="/static/tokens.css?v={{ asset_version() }}">
+  {% if theme %}<link rel="stylesheet" href="/theme/theme.css?v={{ theme_version }}">{% endif %}
+  <link rel="stylesheet" href="/static/app.css?v={{ asset_version() }}">
+  <script src="/static/vendor/htmx.min.js" defer></script>
+  <script src="/static/vendor/alpine.min.js" defer></script>
+  {% block head %}{% endblock %}
+</head>
+<body>
+  <header class="shell-header">
+    <a class="shell-brand" href="/">
+      {% if theme and theme.logo %}
+        <img class="shell-logo{{ ' shell-logo-light' if theme.logo_dark }}" src="/theme/{{ theme.logo }}?v={{ theme_version }}" alt="{{ theme.logo_alt or brand_name }}">
+        {% if theme.logo_dark %}<img class="shell-logo shell-logo-dark" src="/theme/{{ theme.logo_dark }}?v={{ theme_version }}" alt="{{ theme.logo_alt or brand_name }}">{% endif %}
+      {% endif %}
+      <span class="shell-name">
+        <span class="shell-product">{{ brand_name }}</span>
+        {% if theme and theme.subtitle %}<span class="shell-subtitle">{{ theme.subtitle }}</span>{% endif %}
+      </span>
+    </a>
+    {% set me = current_user() %}
+    {% if me %}
+    <nav class="shell-nav" aria-label="Modules">
+      {% for item in nav_items %}
+        <a href="{{ item.href }}"{% if current_module == item.module %} aria-current="page"{% endif %}>{{ item.label }}</a>
+      {% endfor %}
+    </nav>
+    <form class="shell-search" role="search" method="get" action="/search">
+      <input class="input" type="search" name="q" placeholder="Search everything" aria-label="Search everything">
+    </form>
+    <a class="shell-user" href="/account">{{ me.display_name }}</a>
+    {% endif %}
+  </header>
+  <main class="shell-main">
+    {% block content %}{% endblock %}
+  </main>
+  <footer class="shell-footer">{{ brand_name }} · {{ app_version }}</footer>
+</body>
+</html>

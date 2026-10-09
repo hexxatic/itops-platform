@@ -1,0 +1,29 @@
+{% extends "core/shell.html" %}
+{% import "core/components.html" as ui %}
+{% block content %}
+{% call ui.page_header(page_title, "Saving makes a draft. Nothing changes for records until an admin publishes it.") %}
+  {% if key %}{{ ui.button("Back to " ~ definition.name, href=base ~ "/" ~ key) }}{% endif %}
+  {{ ui.button("All " ~ module_title ~ " types", href=base) }}
+{% endcall %}
+{% if error %}{{ ui.alert(error, "danger") }}{% endif %}
+<form method="post" action="{{ action }}" class="stack">
+  {% call ui.card() %}
+    <div class="stack">
+      {{ ui.field("name", "Name", value=definition.name, required=True, help="Singular, e.g. “Vendor” or “Application”.") }}
+      {{ ui.field("description", "Description", value=definition.description, help="What records of this type are for.") }}
+    </div>
+  {% endcall %}
+  {% call ui.card("Fields") %}
+    {{ ui.type_editor("fields", definition.fields, locked=locked, kinds=kinds, targets=targets) }}
+  {% endcall %}
+  {% call ui.card() %}
+    <div class="stack">
+    {{ ui.field("note", "Change note", value=note, help="Optional: what changed and why, for the history.") }}
+    <div class="row">
+      {{ ui.button("Save draft", type="submit", variant="primary") }}
+      {{ ui.button("Cancel", href=base ~ ("/" ~ key if key else ""), variant="ghost") }}
+    </div>
+    </div>
+  {% endcall %}
+</form>
+{% endblock %}

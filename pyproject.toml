@@ -1,0 +1,55 @@
+# Workspace root (not a package). Members: the core and every module under modules/.
+# Setup: `uv sync --all-packages`  ·  Run: `uv run itops serve --reload`
+[project]
+name = "itops-workspace"
+version = "0"
+requires-python = ">=3.12"
+
+[tool.uv]
+package = false
+
+[tool.uv.workspace]
+members = ["core", "modules/*"]
+
+[dependency-groups]
+dev = [
+    "ruff>=0.8",
+    "pyright>=1.1.390",
+    "pytest>=8.3",
+    "pytest-asyncio>=0.25",
+    "httpx>=0.28",
+    "pre-commit>=4.0",
+]
+
+[tool.ruff]
+line-length = 100
+target-version = "py312"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B", "SIM", "RUF"]
+
+[tool.ruff.lint.isort]
+known-first-party = ["itops"]
+
+[tool.ruff.lint.flake8-bugbear]
+# FastAPI dependency markers are called in argument defaults by design.
+extend-immutable-calls = ["fastapi.Depends", "fastapi.Query", "fastapi.Path", "fastapi.Body"]
+
+[tool.pyright]
+include = ["core/src", "modules", "tests"]
+exclude = ["**/_scaffold/**", "**/.venv/**"]
+typeCheckingMode = "strict"
+pythonVersion = "3.12"
+reportMissingTypeStubs = false
+extraPaths = [
+    "tests/integration/fakesync",  # the test connector package (ADR 0010)
+    "tests/integration/faketools",  # the test tool actions (ADR 0011)
+]
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+asyncio_default_fixture_loop_scope = "session"
+asyncio_default_test_loop_scope = "session"
+testpaths = ["core/tests", "modules", "tests"]
+addopts = "--import-mode=importlib"
+pythonpath = ["core/tests"]

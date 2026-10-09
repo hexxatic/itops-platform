@@ -1,0 +1,9 @@
+{% extends "core/shell.html" %}
+{% import "core/components.html" as ui %}
+{% block content %}
+{% call ui.page_header("Search docs", "Published documentation only. To search everything, use the box at the top.") %}
+  {{ ui.button("All docs", href="/docs/") }}
+{% endcall %}
+{{ ui.search_box("/docs/search", query, "Search docs", archived=archived, live=True) }}
+{{ ui.search_results(hits, query) }}
+{% endblock %}

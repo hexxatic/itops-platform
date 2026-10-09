@@ -1,0 +1,19 @@
+name = "docs"
+version = "0.6.0"
+title = "Docs"
+description = "IT documentation: section-based documents with drafts, publishing and version history."
+requires = ["core>=0.1"]
+optional = ["assets"]
+provides = ["lookup", "related", "link_targets", "ensure_collections", "source_status", "save_file", "upsert", "type_usage", "move_type", "archive_type"]
+
+[permissions]
+"docs.read" = "Read published documentation"
+"docs.write" = "Create documents and save drafts"
+"docs.publish" = { description = "Publish, discard and archive documents", human_only = true }
+"docs.types.draft" = "Draft document types and changes to them (admins; AI may draft)"
+"docs.types.approve" = { description = "Publish, retire and restore document types (admins)", human_only = true }
+"docs.collections.manage" = { description = "Create, rename, reorder and delete collections (admins)", human_only = true }
+
+[events]
+document_published = "A document version was published (payload: id, slug, title, version)"
+document_archived = "A document was archived (payload: id, slug)"

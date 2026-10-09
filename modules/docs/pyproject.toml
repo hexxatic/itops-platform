@@ -1,0 +1,19 @@
+[project]
+name = "itops-docs"
+version = "0.2.0"
+description = "Docs module for IT-Ops."
+requires-python = ">=3.12"
+dependencies = ["itops-core"]
+
+[project.entry-points."itops.modules"]
+docs = "itops_docs:module"
+
+[tool.uv.sources]
+itops-core = { workspace = true }
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/itops_docs"]

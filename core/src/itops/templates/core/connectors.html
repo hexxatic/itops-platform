@@ -1,0 +1,10 @@
+{% extends "core/shell.html" %}
+{% import "core/components.html" as ui %}
+{% block content %}
+{{ ui.page_header("Connectors", "Every flow of data into or out of IT-Ops: what it syncs, when it runs, and how its last run went.") }}
+{% call ui.card() %}
+{{ ui.table([("name", "Connector"), ("system", "System"), ("direction", "Direction"), ("schedule", "Schedule"),
+             ("state", "State"), ("last", "Last run"), ("when", "Started"), ("next", "Next run")], rows,
+            empty="No connectors installed. Each external system (IT Glue, Entra, ...) adds its own.") }}
+{% endcall %}
+{% endblock %}

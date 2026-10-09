@@ -1,0 +1,22 @@
+{% extends "core/shell.html" %}
+{% import "core/components.html" as ui %}
+{% block content %}
+{% call ui.page_header(page_title, "Retiring stops offering this type for new records. Nothing is deleted, and it can be restored.") %}
+  {{ ui.button("Back to " ~ view.current.definition.name, href=base ~ "/" ~ view.key) }}
+{% endcall %}
+<form method="post" action="{{ api }}/{{ view.key }}/retire" class="stack">
+{% call ui.card() %}
+<div class="stack">
+  {% if usage %}
+    <p><strong>{{ usage }} record{{ "s" if usage != 1 }}</strong> use{{ "s" if usage == 1 }} this type. What should happen to {{ "it" if usage == 1 else "them" }}?</p>
+    {{ ui.select("then", "Existing records", choices, selected="keep") }}
+    <p class="muted">Moving keeps every stored value; fields both types share keep showing.</p>
+  {% else %}
+    <p class="muted">{{ "Existing records keep this type." if usage is none else "No records use this type." }}</p>
+    <input type="hidden" name="then" value="keep">
+  {% endif %}
+  <div class="actions">{{ ui.button("Retire " ~ view.current.definition.name, type="submit", variant="primary") }}</div>
+</div>
+{% endcall %}
+</form>
+{% endblock %}

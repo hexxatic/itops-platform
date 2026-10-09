@@ -1,0 +1,63 @@
+{% extends "core/shell.html" %}
+{% import "core/components.html" as ui %}
+{% block content %}
+{{ ui.page_header("Your account", principal.display_name if principal else None) }}
+
+{% call ui.card("Access") %}
+<p>
+  {% if user %}Signed in as <strong>{{ user.upn }}</strong>. {% endif %}
+  Role: {{ ui.badge(role or "none", "info") }}
+</p>
+{% if entra %}
+<p class="muted">Your role comes from your IT-Ops group in Active Directory. It's read
+  each time you sign in, so after a group change, sign out and back in.</p>
+<p>{{ ui.button("Sign out", href="/auth/logout") }}</p>
+{% endif %}
+{% set mine = admin_links|selectattr("permission", "in", allowed)|list %}
+{% if mine %}
+<p class="row">{% for link in mine %}{{ ui.button(link.label, href=link.href, variant="ghost") }}{% endfor %}</p>
+{% endif %}
+{% endcall %}
+
+{% call ui.card("Appearance") %}
+<form method="post" action="/account/appearance" class="stack">
+  {{ ui.select("appearance", "Light or dark", appearances, selected=chosen_appearance) }}
+  <p class="muted">{% if entra %}Saved with your account, so it follows you to any browser.{% else %}Dev mode: remembered for this browser session.{% endif %}</p>
+  {{ ui.button("Save", type="submit", variant="primary") }}
+</form>
+{% endcall %}
+
+{% call ui.card("AI tools and scripts") %}
+{% if entra %}
+<p>Connect an AI tool (Claude, Copilot, …) to <code>{{ mcp_url }}</code>, or call the
+  REST API under <code>/api/</code>, with a personal access token as a
+  <code>Authorization: Bearer …</code> header. A token acts as you, but <em>via AI</em>:
+  it can read and create drafts; publishing always needs you, here in the browser.</p>
+
+{% if new_token %}
+{{ ui.alert("Copy your new token now. It won't be shown again.", "warning") }}
+<pre class="token-reveal"><code>{{ new_token }}</code></pre>
+{% endif %}
+
+{{ ui.table(
+  [("name", "Name"), ("prefix", "Token"), ("created", "Created"), ("expires", "Expires"), ("used", "Last used"), ("revoke", "")],
+  token_rows,
+  empty="No tokens yet. Create one for each AI tool or script, so you can revoke them separately.") }}
+
+{% if oauth_on %}
+<h3 class="card-subtitle">Connected AI tools</h3>
+<p class="muted">Tools connected by signing in (like ChatGPT). They act as you, via AI, like a token.</p>
+{{ ui.table([("client", "Tool"), ("via", "Returns to"), ("connected", "Connected"), ("used", "Last used"), ("revoke", "")],
+            connection_rows, empty="None connected. In ChatGPT, add the IT-Ops connector and sign in.") }}
+{% endif %}
+
+<form method="post" action="/account/tokens" class="stack">
+  {{ ui.field("name", "Name", required=True, help="What will use it, e.g. “Claude Code on my laptop”.") }}
+  {{ ui.select("days", "Expires after", [(7, "7 days"), (30, "30 days"), (90, "90 days")], selected=max_days) }}
+  {{ ui.button("Create token", type="submit", variant="primary") }}
+</form>
+{% else %}
+<p class="muted">Dev mode: AI tools connect to <code>{{ mcp_url }}</code> without a token.</p>
+{% endif %}
+{% endcall %}
+{% endblock %}

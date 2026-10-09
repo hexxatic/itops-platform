@@ -1,0 +1,31 @@
+{% extends "core/shell.html" %}
+{% import "core/components.html" as ui %}
+{% block content %}
+{% if record %}
+  {% call ui.page_header("Edit: " ~ record.name, type_name) %}
+    {{ ui.button("Back", href="/assets/r/" ~ record.id) }}
+  {% endcall %}
+{% else %}
+  {{ ui.page_header("New " ~ type_noun, definition.description) }}
+{% endif %}
+{% if error %}{{ ui.alert(error, "danger") }}{% endif %}
+
+<form method="post" action="{{ '/api/assets/records/' ~ record.id if record else '/api/assets/records' }}" class="stack">
+  {% if not record %}<input type="hidden" name="type_key" value="{{ type_key }}">{% endif %}
+  {% call ui.card() %}
+    <div class="stack">
+      {% if name_locked %}
+        <div class="field"><span class="field-label">Name</span><span>{{ record.name }}</span><span class="field-help">{{ locked_note }}</span></div>
+      {% else %}
+        {{ ui.field("name", "Name", value=name, required=True) }}
+      {% endif %}
+      {{ ui.field_inputs(definition, values, link_options=link_options, required_note="required",
+                         locked=locked, locked_note=locked_note) }}
+    </div>
+  {% endcall %}
+  <div class="actions">
+    {{ ui.button("Save" if record else "Create", type="submit", variant="primary") }}
+    {{ ui.button("Cancel", href=("/assets/r/" ~ record.id) if record else ("/assets/t/" ~ type_key)) }}
+  </div>
+</form>
+{% endblock %}

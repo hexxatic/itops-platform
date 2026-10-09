@@ -1,0 +1,24 @@
+{% extends "core/shell.html" %}
+{% import "core/components.html" as ui %}
+{% block content %}
+{% call ui.page_header(title ~ ": run " ~ run.id, ("Dry run: nothing was changed. " if run.dry_run else "") ~ "Started " ~ started ~ (" by " ~ run.started_by if run.trigger == "manual" else " on schedule")) %}
+  {{ ui.button("Back to " ~ title, href="/connectors/" ~ run.connector) }}
+{% endcall %}
+{% if run.status == "running" %}
+{% include "core/connector_progress.html" %}
+{% else %}
+{% call ui.card("Outcome") %}
+<div class="row meta-row">
+  {% if status is mapping %}{{ ui.badge(status.badge, status.tone) }}{% endif %}
+  {% if finished %}<span class="muted">Finished {{ finished }} · took {{ run.duration }}</span>{% endif %}
+</div>
+{{ ui.table([("outcome", "Outcome"), ("count", "Records")], counts, empty="Nothing counted yet.") }}
+{% endcall %}
+{% endif %}
+
+{% if problems %}
+{% call ui.card("Problems (" ~ problems|length ~ ")") %}
+  {{ ui.table([("item", "Item"), ("text", "Problem")], problems) }}
+{% endcall %}
+{% endif %}
+{% endblock %}

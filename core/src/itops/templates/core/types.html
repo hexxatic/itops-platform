@@ -1,0 +1,23 @@
+{% extends "core/shell.html" %}
+{% import "core/components.html" as ui %}
+{% block content %}
+{% call ui.page_header(module_title ~ " types", "Record types define the fields a " ~ module_title ~ " record can have. Drafts take effect only when an admin publishes them.") %}
+  {% if can_approve and drafts %}
+    {{ ui.action_button("Publish all drafts (" ~ drafts ~ ")", api ~ "/publish-drafts",
+                        confirm="Publish all " ~ drafts ~ " draft types? Each takes effect for its records right away.") }}
+  {% endif %}
+  {{ ui.button("New type", href=base ~ "/new", variant="primary") }}
+{% endcall %}
+{% if published %}{{ ui.alert("Published " ~ published ~ " type" ~ ("s" if published != "1") ~ ".", "success") }}{% endif %}
+{% if error %}{{ ui.alert(error, "danger") }}{% endif %}
+{% if retired %}
+<p class="row">
+  {% if show_retired %}{{ ui.button("Hide retired types", href=base, variant="ghost") }}
+  {% else %}{{ ui.button("Show retired types (" ~ retired ~ ")", href=base ~ "?retired=1", variant="ghost") }}{% endif %}
+</p>
+{% endif %}
+{% call ui.card() %}
+{{ ui.table([("name", "Type"), ("status", "Status"), ("fields", "Fields"), ("description", "Description")], rows,
+            empty=("Every type is retired." if retired and not show_retired else "No types yet. Create one, or ask an AI tool to draft one (itops_draft_type).")) }}
+{% endcall %}
+{% endblock %}

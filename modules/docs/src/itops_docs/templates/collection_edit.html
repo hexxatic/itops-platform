@@ -1,0 +1,20 @@
+{% extends "core/shell.html" %}
+{% import "core/components.html" as ui %}
+{% block content %}
+{% if col %}
+  {{ ui.page_header("Edit: " ~ col.name, "Renaming keeps its web address (/docs/c/" ~ col.slug ~ "), so links keep working.") }}
+{% else %}
+  {{ ui.page_header("New collection", "Its web address is set from the name now and stays the same if you rename it later.") }}
+{% endif %}
+{% if error %}{{ ui.alert(error, "danger") }}{% endif %}
+{% call ui.card() %}
+<form method="post" action="/api/docs/collections{{ '/' ~ col.slug if col else '' }}" class="stack">
+  {{ ui.field("name", "Name", value=name, required=True, help="e.g. “Networking” or “Vendors”.") }}
+  {{ ui.field("description", "Description", value=description, help="One line on what belongs here. Shown on the Docs home page.") }}
+  <div class="row">
+    {{ ui.button("Save" if col else "Create collection", type="submit", variant="primary") }}
+    {{ ui.button("Cancel", href="/docs/collections", variant="ghost") }}
+  </div>
+</form>
+{% endcall %}
+{% endblock %}

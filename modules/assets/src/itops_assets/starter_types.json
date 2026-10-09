@@ -1,0 +1,95 @@
+[
+  {
+    "key": "device",
+    "name": "Device",
+    "description": "Servers, network gear, computers, printers and anything else with a network or serial number. The record's name is the device's name (usually its hostname).",
+    "fields": [
+      {"key": "kind", "label": "Kind", "kind": "select", "options": ["Server", "Virtual machine", "Workstation", "Laptop", "Switch", "Firewall", "Router", "Access point", "Printer", "Phone", "UPS", "Storage", "Other"]},
+      {"key": "status", "label": "Status", "kind": "select", "options": ["Active", "Spare", "Inactive", "Retired"]},
+      {"key": "hostname", "label": "Hostname", "kind": "text"},
+      {"key": "primary_ip", "label": "Primary IP", "kind": "text"},
+      {"key": "default_gateway", "label": "Default gateway", "kind": "text"},
+      {"key": "mac_address", "label": "MAC address", "kind": "text"},
+      {"key": "serial_number", "label": "Serial number", "kind": "text"},
+      {"key": "asset_tag", "label": "Asset tag", "kind": "text"},
+      {"key": "manufacturer", "label": "Manufacturer", "kind": "text"},
+      {"key": "model", "label": "Model", "kind": "text"},
+      {"key": "operating_system", "label": "Operating system", "kind": "text"},
+      {"key": "os_notes", "label": "OS notes", "kind": "longtext", "help": "Version details, licensing or anything else about the operating system."},
+      {"key": "location", "label": "Location", "kind": "link", "target": "assets.location"},
+      {"key": "rack_position", "label": "Rack position", "kind": "text", "help": "e.g. MDF rack 2, U14"},
+      {"key": "contact", "label": "Contact", "kind": "link", "target": "assets.contact"},
+      {"key": "purchased", "label": "Purchased", "kind": "date"},
+      {"key": "installed_on", "label": "Installed", "kind": "date"},
+      {"key": "installed_by", "label": "Installed by", "kind": "text"},
+      {"key": "warranty_expires", "label": "Warranty expires", "kind": "date"},
+      {"key": "notes", "label": "Notes", "kind": "longtext"}
+    ]
+  },
+  {
+    "key": "ssl_certificate",
+    "name": "SSL certificate",
+    "description": "TLS certificates. The record's name is the main host name on the certificate. Never store private keys here.",
+    "fields": [
+      {"key": "valid_until", "label": "Valid until", "kind": "date", "required": true},
+      {"key": "valid_from", "label": "Valid from", "kind": "date"},
+      {"key": "issued_by", "label": "Issued by", "kind": "text"},
+      {"key": "alternative_names", "label": "Alternative names", "kind": "longtext", "help": "Other host names on the certificate, one per line."},
+      {"key": "installed_on", "label": "Installed on", "kind": "link", "target": "assets.device", "multiple": true},
+      {"key": "renewal", "label": "How it's renewed", "kind": "text", "help": "e.g. Certify the Web, automatic"},
+      {"key": "notes", "label": "Notes", "kind": "longtext"}
+    ]
+  },
+  {
+    "key": "contact",
+    "name": "Contact",
+    "description": "People to reach: staff, vendor contacts, support lines. The record's name is the person's name.",
+    "fields": [
+      {"key": "title", "label": "Title", "kind": "text"},
+      {"key": "email", "label": "Email", "kind": "text"},
+      {"key": "phone", "label": "Phone", "kind": "text"},
+      {"key": "contact_type", "label": "Type", "kind": "select", "options": ["Staff", "Vendor", "Other"]},
+      {"key": "location", "label": "Location", "kind": "link", "target": "assets.location"},
+      {"key": "notes", "label": "Notes", "kind": "longtext"}
+    ]
+  },
+  {
+    "key": "location",
+    "name": "Location",
+    "description": "Sites and buildings. The record's name is the site's name.",
+    "fields": [
+      {"key": "address_1", "label": "Address", "kind": "text"},
+      {"key": "address_2", "label": "Address line 2", "kind": "text"},
+      {"key": "city", "label": "City", "kind": "text"},
+      {"key": "region", "label": "State / region", "kind": "text"},
+      {"key": "postal_code", "label": "Postal code", "kind": "text"},
+      {"key": "country", "label": "Country", "kind": "text"},
+      {"key": "phone", "label": "Phone", "kind": "text"},
+      {"key": "notes", "label": "Notes", "kind": "longtext"}
+    ]
+  },
+  {
+    "key": "domain",
+    "name": "Domain",
+    "description": "Registered domain names. The record's name is the domain.",
+    "fields": [
+      {"key": "expires", "label": "Expires", "kind": "date"},
+      {"key": "registrar", "label": "Registrar", "kind": "text"},
+      {"key": "dns_hosted_at", "label": "DNS hosted at", "kind": "text"},
+      {"key": "notes", "label": "Notes", "kind": "longtext"}
+    ]
+  },
+  {
+    "key": "ip_address",
+    "name": "IP address",
+    "description": "IP addresses and what uses them. The record's name is the address.",
+    "fields": [
+      {"key": "description", "label": "Description", "kind": "text"},
+      {"key": "vlan", "label": "VLAN", "kind": "text"},
+      {"key": "switch", "label": "Switch", "kind": "link", "target": "assets.device"},
+      {"key": "port", "label": "Switch port", "kind": "text"},
+      {"key": "location", "label": "Site", "kind": "link", "target": "assets.location"},
+      {"key": "notes", "label": "Notes", "kind": "longtext"}
+    ]
+  }
+]

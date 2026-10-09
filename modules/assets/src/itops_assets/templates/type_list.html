@@ -1,0 +1,14 @@
+{% extends "core/shell.html" %}
+{% import "core/components.html" as ui %}
+{% block content %}
+{% call ui.page_header(type_name, description) %}
+  {{ ui.button("All assets", href="/assets/") }}
+  {% if can_write %}{{ ui.button("New " ~ type_noun, href="/assets/t/" ~ type_key ~ "/new", variant="primary") }}{% endif %}
+{% endcall %}
+{{ ui.search_box(action="/assets/t/" ~ type_key, value=query, placeholder="Search " ~ type_noun ~ " records") }}
+{% call ui.card() %}
+  <div id="search-results">
+  {{ ui.table(columns, rows, empty=("Nothing matches “" ~ query ~ "”." if query else "No " ~ type_noun ~ " records yet.")) }}
+  </div>
+{% endcall %}
+{% endblock %}

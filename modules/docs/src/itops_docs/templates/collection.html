@@ -1,0 +1,14 @@
+{% extends "core/shell.html" %}
+{% import "core/components.html" as ui %}
+{% block content %}
+{{ ui.breadcrumb([("Docs", "/docs/"), (collection.name, None)]) }}
+{% call ui.page_header(collection.name, collection.description) %}
+  {{ ui.button("All collections", href="/docs/") }}
+  {% if can_write %}{{ ui.button("New document", href="/docs/new?collection=" ~ collection.id, variant="primary") }}{% endif %}
+{% endcall %}
+{{ ui.filter_toggle("archived", "Show archived", show_archived) }}
+{% call ui.card() %}
+  {{ ui.table([("title", "Title"), ("type", "Type"), ("status", "Status"), ("updated", "Updated")], rows,
+              empty="No documents in this collection yet.") }}
+{% endcall %}
+{% endblock %}

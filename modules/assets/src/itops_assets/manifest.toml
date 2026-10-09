@@ -1,0 +1,19 @@
+name = "assets"
+version = "0.4.0"
+title = "Assets"
+description = "IT inventory: devices, SSL certificates, contacts, locations, domains and IP addresses, with admin-defined types."
+requires = ["core>=0.1"]
+optional = ["docs"]
+provides = ["lookup", "related", "link_targets", "upsert", "type_usage", "move_type"]
+
+[permissions]
+"assets.read" = "View assets"
+"assets.write" = "Create and change assets (people edit directly; every change is audited)"
+"assets.publish" = { description = "Approve or reject AI-drafted asset changes, and delete assets", human_only = true }
+"assets.types.draft" = "Draft asset types and changes to them (admins; AI may draft)"
+"assets.types.approve" = { description = "Publish, retire and restore asset types (admins)", human_only = true }
+
+[events]
+record_created = "An asset was created (payload: id, type, name)"
+record_updated = "An asset was changed (payload: id, type, name, changed)"
+record_deleted = "An asset was deleted (payload: id, type, name)"

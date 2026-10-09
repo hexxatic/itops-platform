@@ -1,0 +1,19 @@
+[project]
+name = "itops-assets"
+version = "0.4.0"
+description = "Assets module for IT-Ops."
+requires-python = ">=3.12"
+dependencies = ["itops-core"]
+
+[project.entry-points."itops.modules"]
+assets = "itops_assets:module"
+
+[tool.uv.sources]
+itops-core = { workspace = true }
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/itops_assets"]

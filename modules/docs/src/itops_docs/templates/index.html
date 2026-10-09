@@ -1,0 +1,27 @@
+{% extends "core/shell.html" %}
+{% import "core/components.html" as ui %}
+{% block content %}
+{% call ui.page_header("Docs", "IT documentation. Drafts stay private until someone publishes them.") %}
+  {% if can_manage_collections %}{{ ui.button("Manage collections", href="/docs/collections", variant="ghost") }}{% endif %}
+  {% if can_manage_types %}{{ ui.button("Document types", href="/docs/types", variant="ghost") }}{% endif %}
+  {% if can_write %}{{ ui.button("New document", href="/docs/new", variant="primary") }}{% endif %}
+{% endcall %}
+{% if error %}{{ ui.alert(error, "danger") }}{% endif %}
+{{ ui.search_box("/docs/search", "", "Search docs", archived=False) }}
+
+{% if drafts %}
+{% call ui.card("Drafts waiting to be published") %}
+  {{ ui.table([("title", "Title"), ("type", "Type"), ("collection", "Collection"), ("updated", "Last saved")], drafts) }}
+{% endcall %}
+{% endif %}
+
+{% call ui.card("Collections") %}
+  {{ ui.table([("name", "Collection"), ("description", "About"), ("count", "Documents")], collections,
+              empty="No collections yet.") }}
+{% endcall %}
+
+{% call ui.card("Recently published") %}
+  {{ ui.table([("title", "Title"), ("type", "Type"), ("collection", "Collection"), ("updated", "Updated")], recent,
+              empty="Nothing published yet. Create a document, then publish it.") }}
+{% endcall %}
+{% endblock %}

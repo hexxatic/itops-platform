@@ -1,0 +1,32 @@
+"""${title} module."""
+
+from __future__ import annotations
+
+from typing import Annotated
+
+from fastapi import Depends, Request
+from sqlalchemy import text
+
+from itops.sdk import Module, Principal
+
+module = Module(__name__)
+
+
+@module.page("/", template="index.html", title="${title}", nav="${title}")
+async def home(request: Request) -> dict[str, object]:
+    return {}
+
+
+@module.router.get("/status")
+async def status(
+    user: Annotated[Principal, Depends(module.require("${name}.read"))],
+) -> dict[str, object]:
+    async with module.session() as s:
+        count = (await s.execute(text("SELECT count(*) FROM ${name}.example"))).scalar_one()
+    return {"module": module.name, "examples": count, "user": user.user}
+
+
+@module.tool(permission="${name}.read")
+async def status_summary() -> str:
+    """Summarize the ${title} module's status."""
+    return f"${title} module v{module.manifest.version} is running."

@@ -1,0 +1,11 @@
+from ${pkg} import module
+
+from itops.testing import assert_conformant, assert_migrations_roundtrip
+
+
+def test_conformance() -> None:
+    assert_conformant(module)
+
+
+async def test_migrations_roundtrip(database_url: str) -> None:
+    await assert_migrations_roundtrip(module, database_url)

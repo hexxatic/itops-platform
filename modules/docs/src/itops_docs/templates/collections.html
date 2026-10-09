@@ -1,0 +1,13 @@
+{% extends "core/shell.html" %}
+{% import "core/components.html" as ui %}
+{% block content %}
+{% call ui.page_header("Manage collections", "Collections group documents on the Docs home page. Order them with the arrows.") %}
+  {{ ui.button("Back to Docs", href="/docs/") }}
+  {{ ui.button("New collection", href="/docs/collections/new", variant="primary") }}
+{% endcall %}
+{% if error %}{{ ui.alert(error, "danger") }}{% endif %}
+{% call ui.card() %}
+  {{ ui.table([("name", "Collection"), ("description", "About"), ("documents", "Documents"), ("up", ""), ("down", ""), ("edit", ""), ("delete", "")],
+              rows, empty="No collections yet. Create the first one.") }}
+{% endcall %}
+{% endblock %}

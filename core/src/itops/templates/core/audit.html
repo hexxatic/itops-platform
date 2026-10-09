@@ -1,0 +1,18 @@
+{% extends "core/shell.html" %}
+{% import "core/components.html" as ui %}
+{% block content %}
+{{ ui.page_header("Audit trail", "Who did what, in every module. Entries can't be changed or removed.") }}
+
+<form method="get" action="/audit" class="row filter-bar">
+  {{ ui.select("module", "Module", modules, selected=module) }}
+  {{ ui.field("who", "Person", value=who) }}
+  <label class="check"><input type="checkbox" name="ai" value="1"{% if ai %} checked{% endif %}> Via AI only</label>
+  {{ ui.button("Filter", type="submit") }}
+</form>
+
+{% call ui.card() %}
+{{ ui.activity(entries, show_entity=True,
+    empty="Nothing matches." if (module or who or ai) else "No activity recorded yet. Entries start from the day the audit trail was added.") }}
+{% endcall %}
+{% if older %}<p>{{ ui.button("Older entries", href=older, variant="ghost") }}</p>{% endif %}
+{% endblock %}

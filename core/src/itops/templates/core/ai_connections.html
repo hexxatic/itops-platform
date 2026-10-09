@@ -1,0 +1,25 @@
+{% extends "core/shell.html" %}
+{% import "core/components.html" as ui %}
+{% block content %}
+{{ ui.page_header("AI connections", "Every AI tool that can act as someone here, via AI. Cut any of them off; the audit trail records it.") }}
+
+{% if oauth_on %}
+{% call ui.card("Connected AI tools") %}
+<p class="muted">Connected by signing in (like ChatGPT). Removed automatically when the person leaves or loses their IT-Ops group.</p>
+{{ ui.table([("person", "Person"), ("client", "Tool"), ("via", "Returns to"), ("connected", "Connected"), ("used", "Last used"), ("revoke", "")],
+            connection_rows, empty="Nobody has connected an AI tool yet.") }}
+{% endcall %}
+{% endif %}
+
+{% call ui.card("Personal access tokens") %}
+<p class="muted">Created on people's account pages for AI tools and scripts on the network.</p>
+{{ ui.table([("person", "Person"), ("name", "Name"), ("prefix", "Token"), ("created", "Created"), ("expires", "Expires"), ("used", "Last used"), ("revoke", "")],
+            token_rows, empty="No live tokens.") }}
+{% endcall %}
+
+{% call ui.card("Refused for too many requests") %}
+<p class="muted">The latest requests the rate limits turned away, since the service last started. A burst from one address or token is worth a look.</p>
+{{ ui.table([("at", "When"), ("rule", "Limit"), ("client", "From"), ("path", "Path")],
+            refusal_rows, empty="Nothing refused.") }}
+{% endcall %}
+{% endblock %}

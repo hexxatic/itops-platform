@@ -1,0 +1,8 @@
+{% extends "core/shell.html" %}
+{% import "core/components.html" as ui %}
+{% block content %}
+{% call ui.card(title) %}
+<p>{{ detail }}</p>
+{% if not current_user() %}<p>{{ ui.button("Sign in", href="/auth/login", variant="primary") }}</p>{% endif %}
+{% endcall %}
+{% endblock %}

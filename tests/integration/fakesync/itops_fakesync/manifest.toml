@@ -1,0 +1,17 @@
+name = "fakesync"
+version = "0.1.0"
+title = "Fake sync"
+description = "A test connector that writes devices into assets."
+requires = ["core>=0.1"]
+optional = ["assets"]
+
+[connectors.inventory]
+title = "Inventory sync"
+system = "Inventory"
+description = "Devices from a pretend inventory system."
+schedule = "every 1m"
+permissions = ["assets.write"]
+secrets = ["token"]
+
+[connectors.inventory.owns]
+"assets.device" = ["name", "serial_number", "primary_ip"]

@@ -1,0 +1,44 @@
+{% extends "core/shell.html" %}
+{% import "core/components.html" as ui %}
+{% block content %}
+{{ ui.breadcrumb([("Assets", "/assets/"), (type_name, "/assets/t/" ~ record.type_key), (record.name, None)]) }}
+{% call ui.page_header(record.name) %}
+  {{ ui.button("All " ~ type_noun ~ " records", href="/assets/t/" ~ record.type_key) }}
+  {% if can_write and definition %}{{ ui.button("Edit", href="/assets/r/" ~ record.id ~ "/edit", variant="primary") }}{% endif %}
+  {% if can_delete %}
+    {{ ui.action_button("Delete", "/api/assets/records/" ~ record.id ~ "/delete", variant="danger",
+                        confirm="Delete " ~ record.name ~ "? Its last values stay in the activity history.") }}
+  {% endif %}
+{% endcall %}
+{% if error %}{{ ui.alert(error, "danger") }}{% endif %}
+{% for src in sources %}
+  {% if src.missing_since %}
+    {{ ui.alert("No longer in " ~ src.system ~ " since " ~ src.missing_since ~ ". Check whether it's gone and delete it here if so.", "warning") }}
+  {% endif %}
+{% endfor %}
+{% if sources %}
+<div class="row meta-row">
+  {% for src in sources %}{{ ui.badge("Synced from " ~ src.system, "info") }}<span class="muted">last seen {{ src.last_seen }}</span>{% endfor %}
+</div>
+{% endif %}
+{% if not definition %}{{ ui.alert("This record's type isn't published any more, so it can't be edited.", "warning") }}{% endif %}
+
+{% call ui.card("Details") %}
+  {% if definition %}{{ ui.field_values(definition, values, links) }}{% else %}<p class="muted">No details.</p>{% endif %}
+{% endcall %}
+{% if documents %}
+  {% call ui.card("Documents") %}
+    {{ ui.table([("name", "Document"), ("field", "Linked as")], documents) }}
+  {% endcall %}
+{% endif %}
+{% if linked_from %}
+  {% call ui.card("Linked from") %}
+    {{ ui.table([("name", "Asset"), ("type", "Type"), ("field", "Linked as")], linked_from) }}
+  {% endcall %}
+{% endif %}
+<p class="muted">Created {{ created }} by {{ created_by }}{% if updated and updated != created %} · changed {{ updated }} by {{ updated_by }}{% endif %}</p>
+
+{% call ui.disclosure("Activity (" ~ activity|length ~ ")") %}
+  {{ ui.activity(activity) }}
+{% endcall %}
+{% endblock %}

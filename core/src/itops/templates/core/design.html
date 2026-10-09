@@ -1,0 +1,64 @@
+{% extends "core/shell.html" %}
+{% import "core/components.html" as ui %}
+{% block content %}
+{% call ui.page_header("Design system", "Every core component. Modules compose these; they don't write CSS.") %}
+  {{ ui.button("Primary action", variant="primary") }}
+{% endcall %}
+
+{% call ui.card("Buttons") %}
+<div class="row">
+  {{ ui.button("Primary", variant="primary") }}
+  {{ ui.button("Secondary") }}
+  {{ ui.button("Danger", variant="danger") }}
+  {{ ui.button("Link-style", href="#", variant="ghost") }}
+</div>
+{% endcall %}
+
+{% call ui.card("Badges") %}
+<div class="row">
+  {% for tone in ["neutral", "info", "success", "warning", "danger"] %}{{ ui.badge(tone, tone) }}{% endfor %}
+</div>
+{% endcall %}
+
+{% call ui.card("Alerts") %}
+{% for tone in ["info", "success", "warning", "danger"] %}{{ ui.alert("This is a " ~ tone ~ " alert.", tone) }}{% endfor %}
+{% endcall %}
+
+{% call ui.card("Stats") %}
+<div class="row">{{ ui.stat("Open tickets", 12) }}{{ ui.stat("Docs", 348) }}{{ ui.stat("Assets", 911) }}</div>
+{% endcall %}
+
+{% call ui.card("Breadcrumb and link list") %}
+<div class="stack">
+  {{ ui.breadcrumb([("Docs", "/docs/"), ("Infrastructure", "/docs/"), ("Server patching", None)]) }}
+  {{ ui.link_list([{"text": "DB-SRV01", "href": "#", "note": "Runs on"}, {"text": "APP-SRV01", "href": "#", "note": "Runs on"}]) }}
+</div>
+{% endcall %}
+
+{% call ui.card("Progress") %}
+<div class="stack">{{ ui.progress("Step 3: Devices", 184, 628) }}{{ ui.progress("Step 1: Reading the source") }}</div>
+{% endcall %}
+
+{% call ui.card("Table") %}
+{{ ui.table([("id", "ID"), ("title", "Title"), ("status", "Status")],
+            [{"id": 101, "title": "Printer offline", "status": "Open"},
+             {"id": 102, "title": "VPN setup", "status": "Resolved"}]) }}
+{% endcall %}
+
+{% call ui.card("Form fields") %}
+<form class="stack">
+  {{ ui.field("title", "Title", required=True, help="Short and specific.") }}
+  {{ ui.field("body", "Details", type="textarea") }}
+</form>
+{% endcall %}
+
+{% call ui.card("Disclosure (collapsed section)") %}
+{% call ui.disclosure("History (3 versions)") %}<p>Hidden until expanded.</p>{% endcall %}
+{% endcall %}
+
+{% call ui.card("Activity (audit entries)") %}{{ ui.activity(sample_activity) }}{% endcall %}
+
+{% call ui.card("Empty state") %}
+{{ ui.empty_state("No documents yet", "Create the first one to get started.") }}
+{% endcall %}
+{% endblock %}

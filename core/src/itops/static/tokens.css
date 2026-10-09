@@ -1,0 +1,82 @@
+/* IT-Ops design tokens. The ONLY place colors, spacing, radii, and type are defined.
+   Neutral by default; a deployment theme (core/theme.py, kept in private/) overrides these
+   custom properties and nothing else.
+
+   Colors are light-dark(<light>, <dark>) pairs: the page follows the system setting, and a
+   person's Appearance choice (/account) pins it by setting data-theme on <html>. */
+:root { color-scheme: light dark; }
+:root[data-theme="light"] { color-scheme: light; }
+:root[data-theme="dark"] { color-scheme: dark; }
+
+:root {
+  --bg: light-dark(#f4f6f8, #11161c);
+  --surface: light-dark(#ffffff, #182029);
+  --surface-muted: light-dark(#f8fafc, #1d2631);
+  --surface-row-hover: light-dark(#f6f9fb, #1f2934);
+  --text: light-dark(#1d2733, #d7dee6);
+  --text-strong: light-dark(#0f1b2a, #f1f4f7);
+  --heading: light-dark(#0f1b2a, #f1f4f7);
+  --muted: light-dark(#5f6f80, #93a1b0);
+  --border: light-dark(#d9e1e8, #2b3643);
+  --border-strong: light-dark(#b8c5d1, #3c4a5a);
+
+  --accent: light-dark(#2459a6, #6a9fe6);
+  --accent-hover: light-dark(#1b467f, #8db5ee);
+  --accent-soft: light-dark(#e8f0fb, #1e2d42);
+  --on-accent: light-dark(#ffffff, #0c1420);
+  --info: light-dark(#5aa9d6, #6fb9e0);   /* secondary accent: focus rings, informational marks */
+
+  --success: light-dark(#2f7d46, #6cc68a); --success-hover: light-dark(#256338, #8fd6a6);
+  --warning: light-dark(#b97300, #e5b04a);
+  --danger: light-dark(#b42318, #e5645a);  --danger-hover: light-dark(#8f1b13, #f08a81);
+  --success-fg: light-dark(#1f6b3a, #8fd6a6);
+  --success-surface: light-dark(#e2f4e8, #15301f);
+  --success-border: light-dark(#b9e0c7, #25502f);
+  --warning-fg: light-dark(#7a4b00, #f1c86b);
+  --warning-surface: light-dark(#fff4d6, #33270d);
+  --warning-border: light-dark(#f2d28a, #5a4516);
+  --danger-fg: light-dark(#8f1b13, #f3a39b);
+  --danger-surface: light-dark(#fdecea, #3a1714);
+  --danger-border: light-dark(#f5c2bc, #612520);
+  --info-fg: light-dark(#173d5c, #9fd3ef);
+  --info-surface: light-dark(#e8f6fc, #13293a);
+  --info-border: light-dark(#bbe4f5, #214661);
+  --neutral-fg: light-dark(#344054, #c2ccd6);
+  --neutral-surface: light-dark(#eef1f4, #232d38);
+  --neutral-border: light-dark(#d5dce3, #34414f);
+
+  /* The top bar: follows the page unless a theme says otherwise. */
+  --header-bg: var(--surface);
+  --header-fg: var(--text);
+  --header-strong: var(--heading);
+  --header-muted: var(--muted);
+  --header-border: var(--border);
+  --header-border-strong: var(--border-strong);
+  --header-input-bg: var(--surface);
+  --nav-fg: var(--muted);
+  --nav-hover-bg: var(--surface-muted);
+  --nav-active-bg: var(--accent-soft);
+  --nav-active-fg: var(--accent-hover);
+
+  --space-1: 0.25rem; --space-2: 0.5rem; --space-3: 0.75rem;
+  --space-4: 1rem;    --space-5: 1.5rem; --space-6: 2rem;
+  --page-pad: 1.5rem;
+
+  --radius-sm: 0.35rem; --radius: 0.55rem; --radius-pill: 999px;
+  --shadow: 0 1px 2px light-dark(rgba(15, 27, 42, 0.06), rgba(0, 0, 0, 0.3)),
+    0 1px 8px light-dark(rgba(15, 27, 42, 0.04), transparent);
+  --shadow-md: 0 10px 24px light-dark(rgba(15, 27, 42, 0.10), rgba(0, 0, 0, 0.35));
+  --focus-ring: 0 0 0 3px light-dark(rgba(90, 169, 214, 0.45), rgba(111, 185, 224, 0.45));
+
+  --font: "Segoe UI", system-ui, -apple-system, Arial, sans-serif;
+  --mono: "Cascadia Code", Consolas, ui-monospace, monospace;
+  --text-xs: 0.76rem; --text-sm: 0.875rem; --text-base: 0.9375rem; --text-lg: 1.125rem;
+  --text-xl: 1.375rem; --text-title: clamp(1.55rem, 2.1vw, 2.15rem);
+  --line: 1.45;
+  --measure: 72ch;              /* reading width of documents */
+  --content-width: 72rem;
+}
+
+@media (max-width: 680px) {
+  :root { --page-pad: 0.85rem; }
+}

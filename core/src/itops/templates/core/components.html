@@ -1,0 +1,475 @@
+{#- Core component library. Modules import these macros instead of writing markup/CSS:
+      {% import "core/components.html" as ui %}
+    Every macro is shown on /_design. Missing something? Add it here (core change),
+    don't hand-roll it in a module. -#}
+
+{% macro page_header(title, subtitle=None) -%}
+<div class="page-header">
+  <div>
+    <h1>{{ title }}</h1>
+    {% if subtitle %}<p class="muted">{{ subtitle }}</p>{% endif %}
+  </div>
+  {% if caller %}<div class="page-actions">{{ caller() }}</div>{% endif %}
+</div>
+{%- endmacro %}
+
+{% macro button(label, href=None, variant="secondary", type="button", attrs={}) -%}
+{% if href %}
+<a class="btn btn-{{ variant }}" href="{{ href }}"{{ attrs|xmlattr }}>{{ label }}</a>
+{% else %}
+<button class="btn btn-{{ variant }}" type="{{ type }}"{{ attrs|xmlattr }}>{{ label }}</button>
+{% endif %}
+{%- endmacro %}
+
+{% macro card(title=None) -%}
+<section class="card">
+  {% if title %}<h2 class="card-title">{{ title }}</h2>{% endif %}
+  {{ caller() }}
+</section>
+{%- endmacro %}
+
+{#- tone: neutral | info | success | warning | danger -#}
+{% macro badge(text, tone="neutral") -%}
+<span class="badge badge-{{ tone }}">{{ text }}</span>
+{%- endmacro %}
+
+{#- Plain text, or a body with links: {% call ui.alert("", "info") %}...{% endcall %} -#}
+{% macro alert(text, tone="info") -%}
+<div class="alert alert-{{ tone }}" role="status">{{ caller() if caller else text }}</div>
+{%- endmacro %}
+
+{% macro stat(label, value) -%}
+<div class="stat"><span class="stat-value">{{ value }}</span><span class="stat-label">{{ label }}</span></div>
+{%- endmacro %}
+
+{#- Progress of something running. With a total it fills; without one it shows activity. -#}
+{% macro progress(label, done=0, total=None) -%}
+<div class="progress-field">
+  <div class="progress-label">
+    <span>{{ label }}</span>
+    {% if total %}<span class="muted">{{ done }} of {{ total }}</span>
+    {%- elif done %}<span class="muted">{{ done }} done</span>{% endif %}
+  </div>
+  <progress class="progress" aria-label="{{ label }}"{% if total %} value="{{ [done, total]|min }}" max="{{ total }}"{% endif %}></progress>
+</div>
+{%- endmacro %}
+
+{% macro empty_state(title, text=None) -%}
+<div class="empty-state">
+  <p class="empty-title">{{ title }}</p>
+  {% if text %}<p class="muted">{{ text }}</p>{% endif %}
+  {% if caller %}{{ caller() }}{% endif %}
+</div>
+{%- endmacro %}
+
+{#- columns: [(key, label)], rows: [dict]. A cell is plain text, {"text", "href"} for a
+    link, {"badge", "tone"} for a badge, or {"action", "label", "confirm"?, "variant"?} for a
+    one-button POST form. -#}
+{% macro table(columns, rows, empty="Nothing here yet.") -%}
+{% if rows %}
+<div class="table-wrap">
+  <table class="table">
+    <thead><tr>{% for key, label in columns %}<th scope="col">{{ label }}</th>{% endfor %}</tr></thead>
+    <tbody>
+      {% for row in rows %}
+      <tr>{% for key, label in columns %}{% set v = row[key] %}<td>
+        {%- if v is mapping and v.href %}<a href="{{ v.href }}">{{ v.text }}</a>
+        {%- elif v is mapping and v.badge %}{{ badge(v.badge, v.tone or "neutral") }}
+        {%- elif v is mapping and v.action %}{{ action_button(v.label, v.action, v.variant or "secondary", v.confirm) }}
+        {%- else %}{{ v }}{% endif -%}
+      </td>{% endfor %}</tr>
+      {% endfor %}
+    </tbody>
+  </table>
+</div>
+{% else %}
+{{ empty_state(empty) }}
+{% endif %}
+{%- endmacro %}
+
+{% macro field(name, label, value="", type="text", required=False, help=None) -%}
+<label class="field">
+  <span class="field-label">{{ label }}{% if required %} <span aria-hidden="true">*</span>{% endif %}</span>
+  {% if type == "textarea" %}
+  <textarea class="input" name="{{ name }}"{% if required %} required{% endif %}>{{ value }}</textarea>
+  {% else %}
+  <input class="input" type="{{ type }}" name="{{ name }}" value="{{ value }}"{% if required %} required{% endif %}>
+  {% endif %}
+  {% if help %}<span class="field-help">{{ help }}</span>{% endif %}
+</label>
+{%- endmacro %}
+
+{#- options: [(value, label)] -#}
+{% macro select(name, label, options, selected=None, required=False) -%}
+<label class="field">
+  <span class="field-label">{{ label }}</span>
+  <select class="input" name="{{ name }}"{% if required %} required{% endif %}>
+    {% for value, text in options %}
+    <option value="{{ value }}"{% if value|string == selected|string %} selected{% endif %}>{{ text }}</option>
+    {% endfor %}
+  </select>
+</label>
+{%- endmacro %}
+
+{#- A one-button form that POSTs to `action` (no JavaScript needed). -#}
+{% macro action_button(label, action, variant="secondary", confirm=None) -%}
+<form method="post" action="{{ action }}" class="inline-form">
+  <button class="btn btn-{{ variant }}" type="submit"
+    {%- if confirm %} onclick="return window.confirm({{ confirm|tojson|forceescape }})"{% endif %}>{{ label }}</button>
+</form>
+{%- endmacro %}
+
+{#- Rich content (itops.sdk.content.render(...) output). Blocks were sanitized on save. -#}
+{% macro content(blocks) -%}
+<div class="content">
+  {% for b in blocks %}
+    {% if b.type == "heading" %}
+      {% if b.level == 3 %}<h3 id="{{ b.anchor }}">{{ b.text }}</h3>{% else %}<h2 id="{{ b.anchor }}">{{ b.text }}</h2>{% endif %}
+    {% elif b.type == "step" %}
+      <section class="content-step"{% if b.anchor %} id="{{ b.anchor }}"{% endif %}>
+        <div class="content-step-no" aria-label="Step {{ b.step }}">{{ b.step }}</div>
+        <div class="content-step-body">
+          {% if b.title %}<h3 class="content-step-title">{{ b.title }}</h3>{% endif %}
+          {{ b.html|safe }}
+          {% if b.duration_min %}<p class="muted content-step-time">About {{ b.duration_min }} min</p>{% endif %}
+        </div>
+      </section>
+    {% elif b.type == "html" %}
+      <section class="content-html">{{ html_frame(b.html) }}</section>
+    {% else %}
+      <section class="content-text">{{ b.html|safe }}</section>
+    {% endif %}
+  {% endfor %}
+</div>
+{%- endmacro %}
+
+{#- An HTML block in a locked-down frame (ADR 0003/0007). The HTML was sanitized on save;
+    the frame is the second lock, in case the sanitizer ever misses something:
+    - sandbox without allow-scripts: nothing in it can run, even if a script got through.
+      allow-same-origin only so /files images load with the viewer's session, and the
+      page can size the frame to its content (html-frame.js). Scripts stay blocked.
+    - its own CSP: only this site's stylesheets and images, nothing else loads.
+    - links open in a new tab, outside the sandbox; forms can't submit.
+    - page CSS can't leak in and the block's classes can't restyle the page. -#}
+{% macro html_frame(html) -%}
+{%- set doc -%}
+{%- set look = appearance() -%}
+<!doctype html><html lang="en"{% if look != "auto" %} data-theme="{{ look }}"{% endif %}><head><meta charset="utf-8">
+<meta http-equiv="Content-Security-Policy" content="default-src 'none'; img-src 'self'; style-src 'self'; base-uri 'none'; form-action 'none'">
+<base target="_blank">
+<link rel="stylesheet" href="/static/tokens.css?v={{ asset_version() }}">
+{% if theme %}<link rel="stylesheet" href="/theme/theme.css?v={{ theme_version }}">{% endif %}
+<link rel="stylesheet" href="/static/app.css?v={{ asset_version() }}">
+</head><body class="content-frame"><div class="content">{{ html|safe }}</div></body></html>
+{%- endset -%}
+<iframe class="content-html-frame" title="Document content" data-html-frame
+  sandbox="allow-same-origin allow-popups allow-popups-to-escape-sandbox"
+  referrerpolicy="no-referrer" srcdoc="{{ doc|forceescape }}"></iframe>
+<script src="/static/islands/html-frame.js?v={{ asset_version() }}" defer></script>
+{%- endmacro %}
+
+{#- A document to read: the content on a page, with a Contents column only when the
+    content has headings. blocks = render(...), entries = toc(...). -#}
+{#- A document to read: the main column (anything the page puts first, the content, then
+    anything after) and a side column with the Contents and the page's own panels (ui.card
+    works there). The side column stays in view while reading; on narrow screens the
+    Contents fold into the top of the page. Called plainly, or with a caller that gets the
+    part being rendered: {% call(part) ui.reader(blocks, entries) %}{% if part == "top" %}
+    ...{% elif part == "side" %}...{% elif part == "bottom" %}...{% endif %}{% endcall %} -#}
+{% macro reader(blocks, entries) -%}
+<div class="reader">
+  <div class="reader-main">
+    {% if entries %}
+    <details class="reader-toc-inline disclosure"><summary>Contents ({{ entries|length }})</summary>
+      <div class="disclosure-body">{{ toc(entries, title="") }}</div></details>
+    {% endif %}
+    {% if caller %}{{ caller("top") }}{% endif %}
+    {% if blocks %}<article class="reader-page">{{ content(blocks) }}</article>{% endif %}
+    {% if caller %}{{ caller("bottom") }}{% endif %}
+  </div>
+  <aside class="reader-aside" aria-label="About this document">
+    {% if entries %}{{ toc(entries) }}{% endif %}
+    {% if caller %}{{ caller("side") }}{% endif %}
+  </aside>
+</div>
+{%- endmacro %}
+
+{#- Where this page sits: items = [(label, href)], the last one the current page (no link). -#}
+{% macro breadcrumb(items) -%}
+<nav class="breadcrumb" aria-label="Breadcrumb"><ol>
+  {% for label, href in items %}
+    <li>{% if href and not loop.last %}<a href="{{ href }}">{{ label }}</a>{% else %}<span aria-current="page">{{ label }}</span>{% endif %}</li>
+  {% endfor %}
+</ol></nav>
+{%- endmacro %}
+
+{#- A compact list of links with a note each: items = [{text, href, note?}] (side panels). -#}
+{% macro link_list(items, empty="Nothing here yet.") -%}
+{% if items %}
+<ul class="link-list">
+  {% for i in items %}<li><a href="{{ i.href }}">{{ i.text }}</a>{% if i.note %} <span class="muted">{{ i.note }}</span>{% endif %}</li>{% endfor %}
+</ul>
+{% else %}
+<p class="muted">{{ empty }}</p>
+{% endif %}
+{%- endmacro %}
+
+{#- A search form. action: where to search (/search = everything, /docs/search = Docs). -#}
+{#- archived: None = no checkbox; True/False = show "Include archived", checked or not. -#}
+{#- live=True: results (a ui.search_results on the same page) update as you type and when
+    the checkbox changes, via htmx; the URL follows so Back/bookmarks work. Without JS it's
+    a normal form. -#}
+{% macro search_box(action="/search", value="", placeholder="Search", archived=None, live=False) -%}
+{%- set live_attrs -%}
+  hx-get="{{ action }}" hx-include="closest form" hx-target="#search-results"
+  hx-select="#search-results" hx-swap="outerHTML" hx-push-url="true"
+{%- endset %}
+<form class="search-box" role="search" method="get" action="{{ action }}">
+  <input class="input" type="search" name="q" value="{{ value }}" placeholder="{{ placeholder }}" aria-label="{{ placeholder }}"
+    {%- if live %} autofocus {{ live_attrs }} hx-trigger="input changed delay:350ms, search"{% endif %}>
+  <button class="btn" type="submit">Search</button>
+  {% if archived is not none %}
+  <label class="check"><input type="checkbox" name="archived" value="1"{% if archived %} checked{% endif %}
+    {%- if live %} {{ live_attrs }} hx-trigger="change"{% endif %}> Include archived</label>
+  {% endif %}
+</form>
+{%- endmacro %}
+
+{#- A checkbox that re-loads the current list with ?<name>=1 (e.g. "Show archived"). -#}
+{% macro filter_toggle(name, label, checked=False) -%}
+<form class="filter-toggle" method="get">
+  <label class="check"><input type="checkbox" name="{{ name }}" value="1"{% if checked %} checked{% endif %} onchange="this.form.submit()"> {{ label }}</label>
+  <noscript><button class="btn btn-ghost" type="submit">Apply</button></noscript>
+</form>
+{%- endmacro %}
+
+{#- Results from module.search.query(...). show_module: badge each hit with its module. -#}
+{% macro search_results(hits, query, show_module=False, modules={}) -%}
+<div id="search-results" aria-live="polite">
+{% set corrected = (hits|selectattr("corrected")|map(attribute="corrected")|first) if hits else "" %}
+{% if not query %}
+{% elif hits %}
+<p class="muted">{{ hits|length }} result{{ "s" if hits|length != 1 }}</p>
+{% if corrected %}
+<p class="search-corrected">Also showing results for <strong>{{ corrected }}</strong>.
+  <a href="?q={{ query|urlencode }}&amp;exact=1">Search only for “{{ query }}”</a></p>
+{% endif %}
+<ol class="search-results">
+  {% for h in hits %}
+  <li class="search-hit">
+    <a class="search-hit-title" href="{{ h.url }}">{{ h.title }}</a>
+    {% if show_module %}{{ badge(modules.get(h.module, h.module), "info") }}{% endif %}
+    {% if h.archived %}{{ badge("Archived", "neutral") }}{% endif %}
+    {% if h.corrected %}<span title="Found by the corrected spelling: {{ h.corrected }}">{{ badge("Spelling", "neutral") }}</span>
+    {%- elif h.match == "meaning" %}<span title="Found by meaning: it doesn't contain your exact words">{{ badge("Related", "neutral") }}</span>{% endif %}
+    {% if h.label %}<span class="muted search-hit-where">{{ h.label }}</span>{% endif %}
+    <p class="search-hit-snippet">{{ h.snippet|safe }}</p>
+  </li>
+  {% endfor %}
+</ol>
+{% else %}
+{{ empty_state("No results for “" ~ query ~ "”", "Try fewer or different words. Only published content is searchable.") }}
+{% endif %}
+</div>
+{%- endmacro %}
+
+{#- A collapsed section the reader can expand (e.g. history). -#}
+{#- Audit entries (module.audit.history(...)), newest first. show_entity for lists that
+    span many things (the /audit page). -#}
+{% macro activity(entries, show_entity=False, empty="No activity recorded yet.") -%}
+{% if entries %}
+<ol class="activity">
+  {% for e in entries %}
+  <li class="activity-item">
+    <time class="activity-when muted" datetime="{{ e.at.isoformat() }}Z">{{ e.at.strftime("%Y-%m-%d %H:%M") }} UTC</time>
+    <span class="activity-who" title="{{ e.actor_user }}">{{ e.actor_name }}</span>
+    {%- if e.via_ai %} {{ badge("via AI", "info") }}{% endif %}
+    <span class="activity-what">{{ e.summary }}</span>
+    {%- if show_entity and e.entity_title %} <span class="muted">· {{ e.module }} · {{ e.entity_title }}</span>{% endif %}
+  </li>
+  {% endfor %}
+</ol>
+{% else %}
+{{ empty_state(empty) }}
+{% endif %}
+{%- endmacro %}
+
+{% macro disclosure(title, open=False) -%}
+<details class="disclosure"{% if open %} open{% endif %}>
+  <summary>{{ title }}</summary>
+  <div class="disclosure-body">{{ caller() }}</div>
+</details>
+{%- endmacro %}
+
+{#- Contents list: [TocEntry] from itops.sdk.content.toc(...). -#}
+{% macro toc(entries, title="Contents") -%}
+{% if entries %}
+<nav class="toc" aria-label="{{ title or 'Contents' }}">
+  {% if title %}<h3>{{ title }}</h3>{% endif %}
+  <ol>
+    {% for e in entries %}<li class="{{ 'toc-sub' if e.level == 3 }}"><a href="#{{ e.anchor }}">{{ e.text }}</a></li>{% endfor %}
+  </ol>
+</nav>
+{% endif %}
+{%- endmacro %}
+
+{#- Attachments: items = [{id, filename, size, mime}] (files in the core file store).
+    Each downloads from /files/<id>; never opened inside the page. -#}
+{% macro attachment_list(items, empty="No attachments.") -%}
+{% if items %}
+<ul class="attachments">
+  {% for a in items %}
+  <li class="attachment">
+    <a href="/files/{{ a.id }}" download title="{{ a.filename }}">{{ a.filename }}</a>
+    <span class="muted">{{ a.filename.rsplit(".", 1)[-1]|upper if "." in a.filename else "File" }} · {{ a.size|filesize }}</span>
+  </li>
+  {% endfor %}
+</ul>
+{% else %}
+<p class="muted">{{ empty }}</p>
+{% endif %}
+{%- endmacro %}
+
+{#- Add/remove attachments inside a <form enctype="multipart/form-data">. Existing items get
+    a "Remove" checkbox (name remove_name, value = id); new files come in as `upload_name`. -#}
+{% macro attachment_editor(items, upload_name="attachments", remove_name="remove_attachment", max_mb=50) -%}
+{% if items %}
+<ul class="attachments">
+  {% for a in items %}
+  <li class="attachment">
+    <a href="/files/{{ a.id }}" download>{{ a.filename }}</a>
+    <span class="muted">{{ a.size|filesize }}</span>
+    <label class="check"><input type="checkbox" name="{{ remove_name }}" value="{{ a.id }}"> Remove</label>
+  </li>
+  {% endfor %}
+</ul>
+{% endif %}
+<label class="field">
+  <span class="field-label">Add files</span>
+  <input class="input" type="file" name="{{ upload_name }}" multiple>
+  <span class="field-help">PDF, Word, Excel, PowerPoint, Visio, Outlook messages, text, CSV, ZIP or images; up to {{ max_mb }} MB each. Uploaded when you save.</span>
+</label>
+{%- endmacro %}
+
+{#- A record's field values (record types, ADR 0008). values: {key: value}; links:
+    {"module:kind:id": {"text", "href"}} for link fields the module could resolve. -#}
+{% macro field_values(definition, values, links={}) -%}
+{% set shown = definition.fields|selectattr("key", "in", values.keys()|list)|list %}
+{% if shown %}
+<dl class="field-values">
+  {% for f in shown %}{% set v = values[f.key] %}
+  <div class="field-value">
+    <dt>{{ f.label }}</dt>
+    <dd>
+      {%- set items = v if (v is iterable and v is not string and v is not mapping) else [v] -%}
+      {%- for item in items -%}
+        {%- if f.kind == "link" -%}
+          {%- set lk = item.module ~ ":" ~ item.kind ~ ":" ~ item.id -%}
+          {%- if links.get(lk) %}<a href="{{ links[lk].href }}">{{ links[lk].text }}</a>{% else %}<code>{{ lk }}</code>{% endif -%}
+        {%- elif f.kind == "url" -%}
+          <a href="{{ item }}" target="_blank" rel="noopener noreferrer">{{ item }}</a>
+        {%- elif f.kind == "credential" -%}
+          {%- if item.startswith("https://") -%}{{ button("Open in 1Password", href=item, attrs={"target": "_blank", "rel": "noopener noreferrer"}) }}
+          {%- else -%}<code>{{ item }}</code> <span class="muted">1Password reference</span>{%- endif -%}
+        {%- elif f.kind == "select" -%}{{ badge(item, "info") }}
+        {%- elif f.kind == "longtext" -%}<span class="field-longtext">{{ item }}</span>
+        {%- else -%}{{ item }}{%- endif -%}
+        {%- if not loop.last and f.kind not in ("select", "credential") %}, {% endif -%}
+      {%- endfor -%}
+    </dd>
+  </div>
+  {% endfor %}
+</dl>
+{% else %}
+<p class="muted">No details filled in yet.</p>
+{% endif %}
+{%- endmacro %}
+
+{#- Inputs for a record's fields, inside a <form>. Names are prefix ~ field key; several
+    values arrive as repeated names. link_options: {target: [(value, label)]} offers a
+    picker for link targets the module can list (value = "module:kind:id"; values may be
+    stored links or "module:kind:id" strings, e.g. a kept form). Required
+    fields are marked (required_note) but not enforced here: drafts may be incomplete.
+    locked: field keys a connector owns (ADR 0010), shown but not editable (disabled, so
+    not submitted; the module keeps their values), with locked_note under them. -#}
+{% macro field_inputs(definition, values={}, prefix="f__", link_options={}, required_note="needed to publish", locked=[], locked_note="Synced from another system: change it there.") -%}
+{% for f in definition.fields %}{% set v = values.get(f.key) %}{% set name = prefix ~ f.key %}{% set off = f.key in locked or "*" in locked %}
+{%- set items = v if (v is iterable and v is not string and v is not mapping) else ([v] if v is not none else []) -%}
+<label class="field">
+  <span class="field-label">{{ f.label }}{% if f.required %} <span class="muted">({{ required_note }})</span>{% endif %}</span>
+  {% if f.kind == "longtext" %}
+    <textarea class="input" name="{{ name }}" rows="4"{% if off %} disabled{% endif %}>{{ v or "" }}</textarea>
+  {% elif f.kind == "select" %}
+    <select class="input" name="{{ name }}"{% if f.multiple %} multiple size="{{ [f.options|length, 6]|min }}"{% endif %}{% if off %} disabled{% endif %}>
+      {% if not f.multiple %}<option value="">—</option>{% endif %}
+      {% for o in f.options %}<option value="{{ o }}"{% if o in items %} selected{% endif %}>{{ o }}</option>{% endfor %}
+    </select>
+  {% elif f.kind == "link" %}
+    {% set keys = [] %}{% for i in items %}{% if i is mapping %}{% set _ = keys.append(i.module ~ ":" ~ i.kind ~ ":" ~ i.id) %}{% elif i is string and i %}{% set _ = keys.append(i) %}{% endif %}{% endfor %}
+    {% if link_options.get(f.target) %}
+    <select class="input" name="{{ name }}"{% if f.multiple %} multiple size="6"{% endif %}{% if off %} disabled{% endif %}>
+      {% if not f.multiple %}<option value="">—</option>{% endif %}
+      {% for value, label in link_options[f.target] %}<option value="{{ value }}"{% if value in keys %} selected{% endif %}>{{ label }}</option>{% endfor %}
+    </select>
+    {% else %}
+    <input class="input" name="{{ name }}" value="{{ keys|join(', ') }}" placeholder="module:kind:id"{% if off %} disabled{% endif %}>
+    {% endif %}
+  {% else %}
+    <input class="input" name="{{ name }}" value="{{ v if v is not none else '' }}"{% if off %} disabled{% endif %}
+      {%- if f.kind == "number" %} type="number" step="any"
+      {%- elif f.kind == "date" %} type="date"
+      {%- elif f.kind == "url" %} type="url" placeholder="https://"
+      {%- elif f.kind == "credential" %} autocomplete="off" spellcheck="false" placeholder="op://vault/item/field, or a 1Password item link"
+      {%- else %} type="text"{% endif %}>
+  {% endif %}
+  {% if off %}<span class="field-help">{{ locked_note }}</span>{% elif f.help %}<span class="field-help">{{ f.help }}</span>{% elif f.kind == "credential" %}<span class="field-help">A reference to the secret in 1Password. Never the secret itself.</span>{% endif %}
+</label>
+{% endfor %}
+{%- endmacro %}
+
+{#- A record type's fields as a table (core/types: TypeDef). -#}
+{% macro type_fields(definition, empty="No fields yet.") -%}
+{% if definition.fields %}
+<div class="table-wrap">
+  <table class="table">
+    <thead><tr><th scope="col">Field</th><th scope="col">Kind</th><th scope="col">Details</th></tr></thead>
+    <tbody>
+    {% for f in definition.fields %}
+      <tr>
+        <td><strong>{{ f.label }}</strong>{% if f.required %} {{ badge("Required", "warning") }}{% endif %}<br><span class="muted">ID</span> <code class="muted">{{ f.key }}</code></td>
+        <td>{{ f.kind }}{% if f.multiple %} (several){% endif %}</td>
+        <td>
+          {%- if f.options %}{{ f.options|join(", ") }}{% endif -%}
+          {%- if f.target %}links to <code>{{ f.target }}</code>{% endif -%}
+          {%- if f.help %}{% if f.options or f.target %}<br>{% endif %}<span class="muted">{{ f.help }}</span>{% endif -%}
+        </td>
+      </tr>
+    {% endfor %}
+    </tbody>
+  </table>
+</div>
+{% else %}
+{{ empty_state(empty) }}
+{% endif %}
+{%- endmacro %}
+
+{#- The record-type field editor island (core). Put it inside a <form>; on submit it writes
+    the field list as JSON into a hidden input named `name`. locked: keys already published
+    (their key and kind stay fixed). kinds: {kind: help} from itops.core.types.FIELD_KINDS.
+    targets: [{target, label}] link fields can point at (empty = a free-text box). -#}
+{% macro type_editor(name, fields, locked=[], kinds={}, targets=[]) -%}
+<div class="type-editor" data-type-editor data-field="{{ name }}" data-locked="{{ locked|tojson|forceescape }}" data-kinds="{{ kinds|tojson|forceescape }}" data-targets="{{ targets|tojson|forceescape }}">
+  <script type="application/json" data-initial>{{ fields|tojson }}</script>
+</div>
+<script src="/static/islands/type-editor.js?v={{ asset_version() }}" defer></script>
+{%- endmacro %}
+
+{#- The section editor island (core). Put it inside a <form>; on submit it writes the
+    block JSON into a hidden input named `name`. upload_url: a module upload route. -#}
+{% macro section_editor(name, value, upload_url) -%}
+<div class="section-editor" data-section-editor data-field="{{ name }}" data-upload="{{ upload_url }}">
+  <script type="application/json" data-initial>{{ value|tojson }}</script>
+</div>
+{#- Plain path: imported macros don't get the request, so url_for isn't available. -#}
+<script src="/static/islands/section-editor.js?v={{ asset_version() }}" defer></script>
+{%- endmacro %}

@@ -1,0 +1,25 @@
+{% extends "core/shell.html" %}
+{% import "core/components.html" as ui %}
+{% block content %}
+{% call ui.page_header("Proposed changes", "AI can suggest new assets and changes; nothing is applied until a person approves it.") %}
+  {{ ui.button("All assets", href="/assets/") }}
+{% endcall %}
+{% if error %}{{ ui.alert(error, "danger") }}{% endif %}
+{% for p in items %}
+  {% call ui.card(p.title) %}
+    <p class="muted">Proposed by {{ p.by }} · {{ p.when }}{% if p.href %} · <a href="{{ p.href }}">Open the current record</a>{% endif %}</p>
+    {% if p.note %}<p>{{ p.note }}</p>{% endif %}
+    {% if p.is_change %}
+      {{ ui.table([("field", "Field"), ("before", "Now"), ("after", "Proposed")], p.rows, empty="No differences from the current record.") }}
+    {% else %}
+      {{ ui.table([("field", "Field"), ("after", "Value")], p.rows, empty="Just the name, no other values.") }}
+    {% endif %}
+    <div class="actions">
+      {{ ui.action_button("Approve", "/api/assets/proposals/" ~ p.id ~ "/approve", variant="primary") }}
+      {{ ui.action_button("Reject", "/api/assets/proposals/" ~ p.id ~ "/reject", variant="danger") }}
+    </div>
+  {% endcall %}
+{% else %}
+  {{ ui.empty_state("Nothing waiting.", "Proposals from AI tools show up here for approval.") }}
+{% endfor %}
+{% endblock %}

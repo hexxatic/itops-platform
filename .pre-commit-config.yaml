@@ -1,0 +1,35 @@
+# Same gates as CI, run locally before every commit. Install once:
+#   uv run pre-commit install
+# Uses the workspace's own tool versions via `uv run`, so everyone (and every AI tool)
+# gets identical results.
+repos:
+  - repo: local
+    hooks:
+      - id: ruff-format
+        name: ruff format
+        entry: uv run ruff format
+        language: system
+        types: [python]
+      - id: ruff
+        name: ruff check
+        entry: uv run ruff check --fix
+        language: system
+        types: [python]
+      - id: pyright
+        name: pyright (strict)
+        entry: uv run pyright
+        language: system
+        types: [python]
+        pass_filenames: false
+      - id: itops-lint
+        name: itops lint (module boundaries + UI rules)
+        entry: uv run itops lint
+        language: system
+        pass_filenames: false
+        files: ^(core|modules|private)/
+      - id: pytest
+        name: pytest (incl. module conformance)
+        entry: uv run pytest -q
+        language: system
+        pass_filenames: false
+        stages: [pre-push]

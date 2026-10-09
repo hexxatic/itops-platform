@@ -1,0 +1,49 @@
+{% extends "core/shell.html" %}
+{% import "core/components.html" as ui %}
+{% block content %}
+{% call ui.page_header(reg.decl.title, reg.decl.description or reg.decl.system) %}
+  {{ ui.button("All connectors", href="/connectors") }}
+  {% if not running %}
+    <form method="post" action="/connectors/{{ reg.key }}/run" class="inline-form">
+      <input type="hidden" name="dry_run" value="true">
+      {{ ui.button("Dry run", type="submit") }}
+    </form>
+    {{ ui.action_button("Run now", "/connectors/" ~ reg.key ~ "/run", variant="primary",
+                        confirm="Run " ~ reg.decl.title ~ " now? It writes to IT-Ops.") }}
+  {% endif %}
+{% endcall %}
+{% if error %}{{ ui.alert(error, "danger") }}{% endif %}
+{% if running %}{% call ui.alert("", "info") %}A run is in progress.{% if running_run %} <a href="/connectors/runs/{{ running_run }}">Watch its progress</a>.{% endif %}{% endcall %}{% endif %}
+
+{% call ui.card("About") %}
+<dl class="field-values">
+  <div class="field-value"><dt>System</dt><dd>{{ reg.decl.system }}</dd></div>
+  <div class="field-value"><dt>Direction</dt><dd>{{ "Into IT-Ops" if reg.decl.direction == "in" else "Out of IT-Ops" }}</dd></div>
+  <div class="field-value"><dt>Schedule</dt><dd>{{ schedule }}</dd></div>
+  <div class="field-value"><dt>State</dt><dd>
+    {% if enabled %}{{ ui.badge("On", "success") }}{% else %}{{ ui.badge("Off", "neutral") }}{% endif %}
+  </dd></div>
+  <div class="field-value"><dt>Acts as</dt><dd>{{ reg.decl.title }} (connector), never a person</dd></div>
+  <div class="field-value"><dt>Records gone from the source</dt><dd>{{ "Flagged for review" if reg.decl.missing == "flag" else "Ignored" }}</dd></div>
+</dl>
+<div class="actions">
+  {% if enabled %}
+    {{ ui.action_button("Turn off", "/connectors/" ~ reg.key ~ "/disable", confirm="Stop scheduled runs of " ~ reg.decl.title ~ "?") }}
+  {% else %}
+    {{ ui.action_button("Turn on", "/connectors/" ~ reg.key ~ "/enable", variant="primary") }}
+  {% endif %}
+</div>
+{% endcall %}
+
+{% if owns %}
+{% call ui.card("Fields it owns") %}
+  <p class="muted">{{ reg.decl.system }} is the source of truth for these: people and AI can't change them in IT-Ops.</p>
+  {{ ui.table([("kind", "Record type"), ("fields", "Fields")], owns) }}
+{% endcall %}
+{% endif %}
+
+{% call ui.card("Runs") %}
+  {{ ui.table([("started", "Started"), ("status", "Outcome"), ("trigger", "How"), ("summary", "Summary"),
+               ("problems", "Problems"), ("duration", "Took")], runs, empty="It hasn't run yet. Try a dry run: it changes nothing.") }}
+{% endcall %}
+{% endblock %}

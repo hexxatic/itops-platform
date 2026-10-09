@@ -1,0 +1,17 @@
+{% extends "core/shell.html" %}
+{% import "core/components.html" as ui %}
+{% block content %}
+{{ ui.page_header(brand_name, "Installed modules") }}
+{% if modules %}
+<div class="grid">
+  {% for m in modules %}
+  {% call ui.card(m.title or m.name) %}
+    <p class="muted">{{ m.description }}</p>
+    <p>{{ ui.badge("v" ~ m.version) }}</p>
+  {% endcall %}
+  {% endfor %}
+</div>
+{% else %}
+{{ ui.empty_state("No modules installed", "Drop a module wheel into modules/ and run itops modules sync.") }}
+{% endif %}
+{% endblock %}

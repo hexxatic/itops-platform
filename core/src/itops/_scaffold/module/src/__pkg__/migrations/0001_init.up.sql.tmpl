@@ -1,0 +1,7 @@
+-- T-SQL. Schema-qualify every object with this module's schema (${name}.); the
+-- runner creates the schema and refuses objects outside it. Separate batches with GO.
+CREATE TABLE ${name}.example (
+    id bigint IDENTITY(1, 1) NOT NULL CONSTRAINT pk_example PRIMARY KEY,
+    title nvarchar(400) NOT NULL,
+    created_at datetime2 NOT NULL CONSTRAINT df_example_created_at DEFAULT sysutcdatetime()
+);

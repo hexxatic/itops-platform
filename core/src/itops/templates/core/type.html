@@ -1,0 +1,51 @@
+{% extends "core/shell.html" %}
+{% import "core/components.html" as ui %}
+{% block content %}
+{% call ui.page_header(view.current.definition.name, module_title ~ " type · " ~ view.key) %}
+  {{ ui.button("All " ~ module_title ~ " types", href=base) }}
+  {% if view.status != "retired" %}{{ ui.button("Edit", href=base ~ "/" ~ view.key ~ "/edit", variant="primary") }}{% endif %}
+  {% if view.draft %}
+    {% if can_approve %}{{ ui.action_button("Publish", api ~ "/" ~ view.key ~ "/publish", variant="primary") }}{% endif %}
+    {{ ui.action_button("Discard draft", api ~ "/" ~ view.key ~ "/discard", variant="danger",
+                        confirm="Throw away the unpublished changes?" if view.published else "Delete this never-published type?") }}
+  {% endif %}
+  {% if can_approve and view.published %}
+    {% if view.retired %}{{ ui.action_button("Restore", api ~ "/" ~ view.key ~ "/restore") }}
+    {% else %}{{ ui.button("Retire", href=base ~ "/" ~ view.key ~ "/retire") }}{% endif %}
+  {% endif %}
+{% endcall %}
+{% if error %}{{ ui.alert(error, "danger") }}{% endif %}
+{% if notice %}{{ ui.alert(notice, "success") }}{% endif %}
+
+<div class="row meta-row">
+  {{ ui.badge(view.status.capitalize(), tone) }}
+  {% if view.published %}<span class="muted">Published version {{ view.published.version }}</span>{% endif %}
+</div>
+{% if view.current.definition.description %}<p>{{ view.current.definition.description }}</p>{% endif %}
+
+{% if view.draft %}
+  {% call ui.card("Draft" ~ (" changes" if view.published else "") ~ " waiting for an admin") %}
+    <p class="muted">Version {{ view.draft.version }}, saved by {{ view.draft.author }}{% if view.draft.via_ai %} {{ ui.badge("via AI", "info") }}{% endif %}{% if view.draft.note %}: “{{ view.draft.note }}”{% endif %}</p>
+    <ul>{% for c in changes %}<li>{{ c }}</li>{% endfor %}</ul>
+    {% if not can_approve %}<p class="muted">Only an admin, signed in to the web page, can publish it.</p>{% endif %}
+    {{ ui.type_fields(view.draft.definition) }}
+  {% endcall %}
+{% endif %}
+
+{% if view.published %}
+  {% call ui.card("Published fields") %}{{ ui.type_fields(view.published.definition) }}{% endcall %}
+{% endif %}
+
+{% call ui.disclosure("History (" ~ history|length ~ " version" ~ ("s" if history|length != 1) ~ ")") %}
+  <ul class="activity">
+  {% for v in history %}
+    <li class="activity-item">
+      <span class="activity-who">v{{ v.version }}</span>
+      {{ ui.badge("Published" if v.published_at else "Draft", "success" if v.published_at else "warning") }}
+      <span class="activity-what">by {{ v.author }}{% if v.via_ai %} (via AI){% endif %}{% if v.published_by %}, published by {{ v.published_by }}{% endif %}{% if v.note %}: {{ v.note }}{% endif %}</span>
+    </li>
+  {% endfor %}
+  </ul>
+{% endcall %}
+{% call ui.disclosure("Activity (" ~ activity|length ~ ")") %}{{ ui.activity(activity) }}{% endcall %}
+{% endblock %}

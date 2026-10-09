@@ -1,0 +1,27 @@
+name = "faketools"
+version = "0.1.0"
+title = "Fake tools"
+description = "Test tool actions (ADR 0011)."
+requires = ["core>=0.1"]
+
+[permissions]
+"faketools.run" = { description = "Run the fake tools", human_only = true }
+
+[actions.slow_job]
+title = "Slow job"
+description = "Replicates a pretend site, step by step."
+permission = "faketools.run"
+danger = "caution"
+confirm = "Run the slow job?"
+timeout = 5
+endpoints = ["DC01/ITOps.Fake"]
+
+[[actions.slow_job.inputs]]
+key = "site"
+label = "Site"
+options = ["South", "North"]
+
+[actions.breaks]
+title = "Breaks"
+description = "Always fails at step 2."
+permission = "faketools.run"

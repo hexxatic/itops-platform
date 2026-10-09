@@ -1,0 +1,59 @@
+{% extends "core/shell.html" %}
+{% import "core/components.html" as ui %}
+{% block content %}
+{{ ui.page_header("Tools", "Jobs you can run from IT-Ops. Each one runs a fixed operation, shows its progress live, and is recorded.") }}
+{% if error %}{{ ui.alert(error, "danger") }}{% endif %}
+{% if notice %}{{ ui.alert(notice, "success") }}{% endif %}
+
+{% if requests %}
+{% call ui.card("Waiting for someone to run (" ~ requests|length ~ ")") %}
+<ul class="link-list">
+  {% for r in requests %}
+  <li class="tool-request">
+    <div>
+      <strong>{{ r.title }}</strong>{% if r.inputs %} <span class="muted">({{ r.inputs }})</span>{% endif %}
+      <div class="muted">Requested by {{ r.req.requested_by_name }}{% if r.req.via_ai %} {{ ui.badge("via AI", "info") }}{% endif %},
+        {{ r.req.requested_at.strftime("%Y-%m-%d %H:%M") }} UTC{% if r.req.reason %}: “{{ r.req.reason }}”{% endif %}</div>
+    </div>
+    {% if can_decide %}
+    <div class="row">
+      {{ ui.action_button("Run it", "/tools/requests/" ~ r.req.id ~ "/approve", variant="primary") }}
+      {{ ui.action_button("Decline", "/tools/requests/" ~ r.req.id ~ "/decline") }}
+    </div>
+    {% endif %}
+  </li>
+  {% endfor %}
+</ul>
+{% endcall %}
+{% endif %}
+
+{% for provider, items in groups.items() %}
+<section class="tool-group">
+  <h2 class="tool-group-title">{{ provider }}</h2>
+  <div class="grid">
+    {% for t in items %}
+    <a class="card tool-card" href="/tools/{{ t.action.key }}">
+      <span class="tool-card-title">{{ t.action.decl.title }}</span>
+      {% if t.action.decl.description %}<span class="muted">{{ t.action.decl.description }}</span>{% endif %}
+      <span class="row tool-card-meta">
+        {% if t.last and t.last.status == "running" %}
+          {{ ui.badge("Running now", "info") }} <span class="muted">by {{ t.last.started_by_name }}</span>
+        {% elif t.last %}
+          {{ ui.badge(t.status.badge, t.status.tone) }} <span class="muted">{{ t.last.started_at.strftime("%Y-%m-%d %H:%M") }} UTC</span>
+        {% else %}<span class="muted">Never run</span>{% endif %}
+        {% if t.action.decl.danger != "safe" %}{{ ui.badge(t.action.decl.danger|capitalize, t.danger_tone) }}{% endif %}
+      </span>
+    </a>
+    {% endfor %}
+  </div>
+</section>
+{% else %}
+{{ ui.empty_state("No tools you can run", "Tools come from provider modules (AD and Entra, Intune, ...); an admin decides who can run each one.") }}
+{% endfor %}
+
+{% if recent %}
+{% call ui.card("Recent runs") %}
+{{ ui.table([("started", "Started"), ("tool", "Tool"), ("status", "Outcome"), ("by", "By"), ("summary", "Summary"), ("took", "Took")], recent) }}
+{% endcall %}
+{% endif %}
+{% endblock %}
