@@ -28,6 +28,38 @@
 <div class="row">{{ ui.stat("Open tickets", 12) }}{{ ui.stat("Docs", 348) }}{{ ui.stat("Assets", 911) }}</div>
 {% endcall %}
 
+{% call ui.card("Dashboard tiles and basis") %}
+{{ ui.stat_tiles([
+  {"label": "Next 12 months", "value": 48250|money, "basis": "partial", "basis_note": "Replacement rate is an assumption until purchase history exists"},
+  {"label": "Replacements", "value": 31, "change": "+6 vs last year", "change_tone": "warning", "basis": "data"},
+  {"label": "Must replace", "value": 9, "change_tone": "danger", "change": "out of warranty"},
+  {"label": "Peripherals", "value": 6100|money, "basis": "estimate"},
+]) }}
+<p>{{ ui.basis("data") }} {{ ui.basis("partial", "Some devices have no purchase date") }} {{ ui.basis("estimate", "No history yet") }}</p>
+{% endcall %}
+
+{% call ui.card("Charts") %}
+<div class="grid-2">
+{{ ui.chart("stacked", ["2022", "2023", "2024", "2025", "2026"],
+  [{"name": "Laptops", "values": [18200, 22400, 15100, 26800, 19900]},
+   {"name": "Desktops", "values": [9100, 7400, 11800, 6200, 8300]},
+   {"name": "Peripherals", "values": [3100, 2900, 4200, 3800, 4100]}], "Device spend by year", money=True) }}
+{{ ui.chart("line", ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug"],
+  [{"name": "Hires", "values": [31, 22, 40, 28, None, 35, 30, 26]},
+   {"name": "Terminations", "values": [27, 30, 33, 24, 29, 31, 28, 30]}], "Hires and terminations") }}
+</div>
+{{ ui.chart("bar", ["Write", "Delete", "Permissions"], [{"name": "Changes", "values": [212, 41, 3]}], "File changes by action", height=160) }}
+{% endcall %}
+
+{% call ui.card("Breakdown") %}
+{{ ui.breakdown([
+  {"label": "Engineering\\Tooling\\Fixtures", "value": 118},
+  {"label": "Engineering\\Tooling\\Dies", "value": 64, "href": "#"},
+  {"label": "Engineering\\Tooling\\Archive", "value": 9},
+]) }}
+<p>{{ ui.export_links("/_design") }}</p>
+{% endcall %}
+
 {% call ui.card("Breadcrumb and link list") %}
 <div class="stack">
   {{ ui.breadcrumb([("Docs", "/docs/"), ("Infrastructure", "/docs/"), ("Server patching", None)]) }}
@@ -50,6 +82,15 @@
   {{ ui.field("title", "Title", required=True, help="Short and specific.") }}
   {{ ui.field("body", "Details", type="textarea") }}
 </form>
+{% endcall %}
+
+{% set sample_logins = [{"label": "Vendor portal (admin)", "ref": "https://start.1password.com/open/i?a=EXAMPLE&i=item"},
+                        {"label": "Console service account", "ref": "op://IT/Console/password"}] %}
+{% call ui.card("Logins (kept in 1Password)") %}
+<div class="stack">
+  {{ ui.login_list(sample_logins) }}
+  <form>{{ ui.login_editor(sample_logins[:1], spare=1) }}</form>
+</div>
 {% endcall %}
 
 {% call ui.card("Disclosure (collapsed section)") %}

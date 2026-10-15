@@ -1,0 +1,94 @@
+{% extends "core/shell.html" %}
+{% import "core/components.html" as ui %}
+{% block content %}
+{{ ui.breadcrumb([("Contracts", "/contracts/"), (contract.name, None)]) }}
+{% call ui.page_header(contract.name, contract.vendor) %}
+  {% if contract.status == "draft" %}
+    {% if can_approve %}
+      {{ ui.action_button("Accept", "/api/contracts/contracts/" ~ contract.id ~ "/accept", variant="primary") }}
+      {{ ui.action_button("Discard", "/api/contracts/contracts/" ~ contract.id ~ "/discard", variant="danger",
+                          confirm="Throw away this drafted contract?") }}
+    {% endif %}
+    {% if can_write %}{{ ui.button("Edit", href="/contracts/c/" ~ contract.id ~ "/edit") }}{% endif %}
+  {% elif contract.status == "archived" %}
+    {% if can_approve %}{{ ui.action_button("Restore", "/api/contracts/contracts/" ~ contract.id ~ "/restore") }}{% endif %}
+  {% else %}
+    {% if undecided and can_approve %}{{ ui.button("Renew", href="/contracts/c/" ~ contract.id ~ "/renew", variant="primary") }}{% endif %}
+    {% if undecided and can_write and term.state != "negotiating" %}
+      {{ ui.action_button("Start negotiating", "/api/contracts/contracts/" ~ contract.id ~ "/negotiate") }}
+    {% endif %}
+    {% if can_write %}{{ ui.button("Edit", href="/contracts/c/" ~ contract.id ~ "/edit") }}{% endif %}
+    {% if can_approve and not undecided %}
+      {{ ui.action_button("Archive", "/api/contracts/contracts/" ~ contract.id ~ "/archive",
+                          confirm="Archive this contract? It leaves the lists and can be restored.") }}
+    {% endif %}
+  {% endif %}
+{% endcall %}
+{% if error %}{{ ui.alert(error, "danger") }}{% endif %}
+{% if contract.status == "draft" %}{{ ui.alert("Drafted by AI. Check it, then accept it (it becomes active) or discard it.", "warning") }}{% endif %}
+{% if contract.status == "archived" %}{{ ui.alert("Archived: out of the lists and reminders.", "neutral") }}{% endif %}
+{% if seat_warning %}{{ ui.alert(seat_warning, "warning") }}{% endif %}
+
+<div class="row meta-row">
+  {% if term %}{{ ui.badge(term_state.badge, term_state.tone) }}{% endif %}
+  {% if left %}{{ ui.badge(left.badge, left.tone) }}{% endif %}
+  {{ ui.badge(category, "neutral") }}
+  {% if contract.auto_renews %}{{ ui.badge("Auto-renews", "info") }}{% endif %}
+</div>
+
+{% call ui.card("Current term") %}
+{% if term %}
+<dl class="field-values">
+  <div class="field-value"><dt>Term</dt><dd>{{ term.starts_on }} to {{ term.ends_on }}</dd></div>
+  <div class="field-value"><dt>Cancel by</dt><dd>{{ cancel_by }}{% if contract.notice_days %} <span class="muted">({{ contract.notice_days }} days notice)</span>{% endif %}</dd></div>
+  {% if cost %}<div class="field-value"><dt>Cost</dt><dd>{{ cost }}</dd></div>{% endif %}
+  {% if term.po_number %}<div class="field-value"><dt>PO number</dt><dd>{{ term.po_number }}</dd></div>{% endif %}
+  {% if seats %}<div class="field-value"><dt>Seats</dt><dd>{{ seats }}</dd></div>{% endif %}
+  <div class="field-value"><dt>Owner</dt><dd>{{ owner }}</dd></div>
+</dl>
+{% if can_write %}<div class="actions">{{ ui.button("Edit term", href="/contracts/t/" ~ term.id ~ "/edit") }}</div>{% endif %}
+{% else %}<p class="muted">No term yet.</p>{% endif %}
+{% endcall %}
+
+{% if undecided and can_approve %}
+{% call ui.disclosure("Not renewing?") %}
+<p class="muted">The current term runs to {{ term.ends_on }}; give the vendor notice by {{ cancel_by }}.</p>
+<form method="post" action="/api/contracts/contracts/{{ contract.id }}/cancel" class="stack">
+  {{ ui.field("note", "Why (optional)", help="Shown in the history, e.g. \"Replaced by Defender\".") }}
+  <div class="actions">{{ ui.button("Cancel the contract", type="submit", variant="danger") }}</div>
+</form>
+{% endcall %}
+{% endif %}
+
+{% for r in to_review %}
+  {% if r.status == "done" %}
+    {{ ui.alert("Suggestions from " ~ r.filename ~ " are ready to review.", "info") }}
+    <p>{{ ui.button("Review them", href="/contracts/t/" ~ term.id ~ "/suggestions/" ~ r.id, variant="primary") }}</p>
+  {% else %}
+    {{ ui.alert("Reading " ~ r.filename ~ " for suggestions…", "info") }}
+    <p>{{ ui.button("See progress", href="/contracts/t/" ~ term.id ~ "/suggestions/" ~ r.id) }}</p>
+  {% endif %}
+{% endfor %}
+{% if term %}{% call ui.card("Files (" ~ files|length ~ ")" if files else "Files") %}
+  {{ ui.attachment_list(files, empty="No files yet: add the signed contract, quote or invoice.") }}
+  {% if can_write %}<div class="actions">{{ ui.button("Add files", href="/contracts/t/" ~ term.id ~ "/edit") }}</div>{% endif %}
+  {% if can_suggest and files %}
+    <div class="actions">
+    {% for f in files %}{{ ui.action_button("Suggest values from " ~ f.filename, "/api/contracts/terms/" ~ term.id ~ "/suggest/" ~ f.id) }}{% endfor %}
+    </div>
+    <p class="muted">A local AI model reads the file and suggests dates, seats and more, each with the sentence it came from. You check and save them.</p>
+  {% endif %}
+{% endcall %}{% endif %}
+
+{% call ui.card("Details") %}
+  {% if contract.description %}<p class="field-longtext">{{ contract.description }}</p>{% endif %}
+  {{ ui.field_values(link_definition, link_values, links) }}
+{% endcall %}
+
+{% call ui.disclosure("Terms (" ~ history|length ~ ")", open=history|length > 1) %}
+  {{ ui.table(history_columns, history) }}
+{% endcall %}
+{% call ui.disclosure("Activity (" ~ activity|length ~ ")") %}
+  {{ ui.activity(activity) }}
+{% endcall %}
+{% endblock %}

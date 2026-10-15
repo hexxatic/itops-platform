@@ -16,18 +16,24 @@ references only).
 - **Permissions:** `assets.read`, `assets.write` (people edit directly), `assets.publish`
   (**human-only**: approve/reject AI proposals, delete records), `assets.types.draft` +
   `assets.types.approve` (**human-only**): asset types, admin-only by construction
+- **Areas (ADR 0012):** `type` (keys are type keys): admins restrict an asset type to AD
+  groups or keep it out of AI on core's access page (the **Who sees these records** card on
+  the type's page); core's type tools filter restricted types too
 - **Events published:** `assets.record_created`, `assets.record_updated`,
   `assets.record_deleted`
 - **Services provided:** `assets.lookup` (records for link pickers and labels:
   `lookup(ids=...)` or `lookup(kind=..., query=...)` → [{id, kind, name, url}]),
   `assets.related` (assets whose fields link to a record), `assets.link_targets`,
-  `assets.upsert` (connectors only, ADR 0010: create or update from a source record),
-  `assets.type_usage` and `assets.move_type` (retiring a type; synced records stay)
+  `assets.upsert` (connectors only, ADR 0010: create or update from a source record;
+  `duplicates=` other source ids for the same thing, whose records are merged into it;
+  `identity=` {serial, macs, hostname} to match a machine another source already has),
+  `assets.type_usage` and `assets.move_type` (retiring a type; synced records stay),
+  `assets.describe_area` (names a type for the access page), `assets.area_entities`
 - **MCP tools:** `assets_search`, `assets_list_records`, `assets_get_record`,
   `assets_list_proposals` (read); `assets_propose_record`, `assets_propose_change`
   (`assets.write`; they store proposals, never change an asset)
 - **Depends on:** core; `docs` optional (link fields to documents, the "Documents" card on
-  a record)
+  a record); `contracts` optional (the "Contracts" card on a covered record)
 
 ## Module-specific notes
 
@@ -43,8 +49,24 @@ references only).
   source records (fingerprint) and writes nothing in a dry run. Outside a connector run,
   `update` puts owned fields back to their current values and `propose` refuses changes
   to them. The record page shows "Synced from ..." and flags records gone from the source.
+  Merging duplicates (`_merge_duplicates`) deletes only records no person ever changed and
+  nothing outside Assets links to; assets linking to them are repointed and the deletion is
+  audited with the last values.
+- **One record per machine (ADR 0017):** `assets.identities` holds every record's
+  normalised serial, MACs and host name (`identity.py`; placeholders like "Default string"
+  left out), rebuilt by `_index`. The first time a source record is seen, `upsert(...,
+  identity=)` links it to the record with the same serial, else a shared MAC, else the same
+  host name (not when both have serials that differ: a replacement, reported). Several
+  candidates: nothing is created (failed, "merge them first"). A record the same connector
+  already syncs from another item is never a candidate.
 - `_index` rebuilds `assets.record_fields` (queryable) and the core search entry after
-  every change; link and credential fields never go into search text.
+  every change; link and credential fields never go into search text. The entry's area is
+  the record's type (ADR 0012).
+- **Restricted types (ADR 0012):** `service.hidden_types()` is applied in every read
+  (`available_types`, `all_types`, `get`, `records`, `lookup`, `related`,
+  `pending_proposals`) and `decide` refuses proposals of hidden types; a new read path must
+  apply it too. `_get` is the unfiltered read (lookup's *Restricted* stubs). Connector runs
+  see every type.
 - **Starter types** ship in `starter_types.json`; the core seeds missing ones at startup
   and never overwrites existing ones (admins' changes stay).
 - Code layout: `app.py` (the Module object), `models.py`, `service.py`, `views.py`,

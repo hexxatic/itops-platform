@@ -45,6 +45,15 @@
   --neutral-surface: light-dark(#eef1f4, #232d38);
   --neutral-border: light-dark(#d5dce3, #34414f);
 
+  /* Chart series (ui.chart, ui.breakdown), in order; distinguishable in both modes. */
+  --chart-1: light-dark(#2459a6, #6a9fe6);
+  --chart-2: light-dark(#d9822b, #f0a95a);
+  --chart-3: light-dark(#2f8f6b, #63c7a0);
+  --chart-4: light-dark(#8e4fb8, #c08ae6);
+  --chart-5: light-dark(#c2405a, #ec7d94);
+  --chart-6: light-dark(#6b7785, #a3afbd);
+  --chart-grid: light-dark(#e6ebf0, #26313d);
+
   /* The top bar: follows the page unless a theme says otherwise. */
   --header-bg: var(--surface);
   --header-fg: var(--text);

@@ -45,6 +45,7 @@ def make_module(tmp_path: Path) -> Iterator[MakeModule]:
         code = "from itops.sdk import Module\nmodule = Module(__name__)\n" + textwrap.dedent(body)
         (d / "__init__.py").write_text(code, "utf-8")
         created.append(pkg)
+        importlib.invalidate_caches()  # the path finder may not have seen this new folder yet
         return importlib.import_module(pkg).module
 
     yield factory

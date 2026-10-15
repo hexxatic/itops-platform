@@ -1,0 +1,29 @@
+name = "reports"
+version = "0.1.0"
+title = "Reports"
+description = "Datasets written by connectors or typed in, and dashboards built on them: tiles, charts, breakdowns and a detail list you can download as Excel or CSV."
+requires = ["core>=0.1"]
+optional = []
+provides = ["upsert", "ensure_dataset", "rows", "describe_area", "area_entities"]
+
+[permissions]
+"reports.read" = "View reports and datasets"
+"reports.write" = "Add, change and delete rows in typed-in datasets (every change is audited); AI may draft reports"
+"reports.publish" = { description = "Create and change datasets and reports, publish AI-drafted reports (admins)", human_only = true }
+"reports.costs" = { description = "See money columns in reports and datasets (never shown to AI connections)", grant = "group" }
+"reports.types.draft" = "Draft dataset column types (admins; AI may draft)"
+"reports.types.approve" = { description = "Publish, retire and restore dataset column types (admins)", human_only = true }
+
+# Admins can restrict a report or a dataset to AD groups, or keep it out of AI (ADR 0012).
+[areas]
+dataset = "Dataset"
+report = "Report"
+
+[events]
+rows_changed = "Rows of a typed-in dataset were added, changed or deleted by a person (payload: dataset, added, changed, deleted)"
+
+[jobs.retention]
+title = "Report data retention"
+description = "Deletes rows older than each dataset's retention period."
+schedule = "daily 03:30"
+permissions = ["reports.read", "reports.write"]

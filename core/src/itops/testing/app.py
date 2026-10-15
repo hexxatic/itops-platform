@@ -3,6 +3,7 @@
 from itops.testing.app import make_app, McpClient
 app = make_app(database_url, [module], files_dir=tmp_path)
 mcp = McpClient([module])            # the platform's MCP server, in-process
+with connector_run("x.sync", owns={"mymodule.thing": ["*"]}): ...  # test an upsert service
 result = await mcp.call("docs_list_collections")
 """
 
@@ -21,13 +22,21 @@ from sqlalchemy import text
 from itops.core import auth
 from itops.core.app import create_app
 from itops.core.config import Settings
+from itops.core.connectors import RunInfo, _in_run  # pyright: ignore[reportPrivateUsage]
 from itops.core.mcp import build_server
 from itops.sdk import Module, Principal
 
 
 def make_app(database_url: str, modules: list[Module], *, files_dir: str | Path) -> FastAPI:
+    """An app for tests. Scheduled jobs don't start on their own: a test runs one with
+    ``app.state.runtime.jobs.run(key)`` and ``wait(key)``."""
     return create_app(
-        Settings(database_url_override=database_url, files_dir=str(files_dir)),
+        Settings(
+            database_url_override=database_url,
+            files_dir=str(files_dir),
+            run_jobs=False,
+            reindex_on_start=False,
+        ),
         modules=modules,
     )
 
@@ -76,6 +85,23 @@ async def clear_search(module: Module) -> None:
     async with module.session() as s:
         await s.execute(text("DELETE FROM itops.search_passages"))
         await s.commit()
+
+
+@contextmanager
+def connector_run(
+    connector: str,
+    *,
+    owns: dict[str, list[str]] | None = None,
+    dry_run: bool = False,
+    run_id: int = 1,
+) -> Generator[None]:
+    """Run a block as if a connector run were calling in (ADR 0010), to test a module's
+    upsert service: ``module.refs.run`` is set, with what the connector ``owns``
+    ({"<module>.<kind>": [field keys or "*"]}) and whether it's a dry run."""
+    info = RunInfo(connector=connector, run_id=run_id, dry_run=dry_run,
+                   owns={k: frozenset(v) for k, v in (owns or {}).items()})  # fmt: skip
+    with _in_run(info):
+        yield
 
 
 @contextmanager

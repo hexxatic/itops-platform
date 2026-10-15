@@ -15,13 +15,18 @@ never rendered inside IT-Ops pages.
 
 from __future__ import annotations
 
+import asyncio
 import hashlib
+import json
 import uuid
+from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
+
+from itops.core import auth, extract
 
 IMAGE_TYPES: dict[str, str] = {
     "image/png": ".png",
@@ -93,6 +98,25 @@ class FileRow:
     storage_path: str
     mime_type: str
     filename: str
+    entity_type: str | None = None  # what it belongs to, once claimed
+    entity_id: str | None = None
+
+
+VisibleEntity = Callable[..., Awaitable[bool]]
+READER_VERSION = 1  # bump when core/extract.py reads something better: cached text is re-read
+
+
+async def may_read(
+    row: FileRow, principal: auth.Principal | None, visible: VisibleEntity | None
+) -> bool:
+    """Whether ``principal`` may read the file: its read permission, and, if it belongs to an
+    entity, that the owning module's ``visible_entity`` service lets them see it (ADR 0012).
+    Downloads (``/files``) and copies (``module.files.copy``) both ask this."""
+    if principal is None or not principal.has(row.read_permission):
+        return False
+    if row.entity_type and row.entity_id and visible is not None:
+        return bool(await visible(entity_type=row.entity_type, entity_id=row.entity_id))
+    return True
 
 
 class FileStore:
@@ -194,6 +218,67 @@ class FileStore:
             claimed += rowcount
         return claimed
 
+    async def copy(
+        self,
+        session: AsyncSession,
+        row: FileRow,
+        *,
+        module: str,
+        read_permission: str,
+        created_by: str,
+    ) -> StoredFile:
+        """A copy of ``row`` owned by ``module``, unclaimed (claim it like an upload). The bytes
+        aren't duplicated: storage is by content, so the copy points at the same file."""
+        file_id = str(uuid.uuid4())
+        await session.execute(
+            text(
+                "INSERT INTO itops.files (id, module, read_permission, sha256, storage_path,"
+                " mime_type, size_bytes, filename, created_by)"
+                " SELECT :id, :module, :perm, sha256, storage_path, mime_type, size_bytes,"
+                " filename, :by FROM itops.files WHERE id = :src"
+            ),
+            {"id": file_id, "module": module, "perm": read_permission, "by": created_by,
+             "src": row.id},
+        )  # fmt: skip
+        size = (
+            await session.execute(
+                text("SELECT size_bytes FROM itops.files WHERE id = :id"), {"id": file_id}
+            )
+        ).scalar_one()
+        return StoredFile(file_id, f"/files/{file_id}", row.filename, row.mime_type, int(size))
+
+    async def text(self, session: AsyncSession, row: FileRow) -> list[str]:
+        """The file's text by page (core/extract.py), read once per file content and kept in
+        ``itops.file_text``; ``[]`` when it has none (a scan, an image, an unreadable file).
+        The caller commits (a first read stores the text)."""
+        if not extract.readable(row.filename):
+            return []
+        sha = PurePosixPath(row.storage_path).stem  # stored as <sha[:2]>/<sha256><ext>
+        cached = (
+            await session.execute(
+                text("SELECT pages, reader_version FROM itops.file_text WHERE sha256 = :s"),
+                {"s": sha},
+            )
+        ).first()
+        if cached is not None and int(cached[1]) == READER_VERSION:
+            stored: list[str] = json.loads(cached[0])
+            return stored
+        path = self.resolve(row.storage_path)
+        data = await asyncio.to_thread(path.read_bytes) if path.exists() else b""
+        pages = await asyncio.to_thread(extract.pages, data, row.filename)
+        await session.execute(
+            text(
+                "MERGE itops.file_text AS t USING (SELECT :s AS sha256) AS src"
+                " ON t.sha256 = src.sha256"
+                " WHEN MATCHED THEN UPDATE SET pages = :p, reader_version = :v,"
+                "   extracted_at = sysutcdatetime()"
+                " WHEN NOT MATCHED THEN INSERT (sha256, pages, reader_version)"
+                "   VALUES (:s, :p, :v);"
+            ),
+            {"s": sha, "p": json.dumps(pages), "v": READER_VERSION},
+        )
+        return pages
+
     async def get(self, session: AsyncSession, file_id: str) -> FileRow | None:
         try:
             uuid.UUID(file_id)
@@ -203,11 +288,12 @@ class FileStore:
             await session.execute(
                 text(
                     "SELECT CAST(id AS nvarchar(36)), module, read_permission, storage_path,"
-                    " mime_type, filename FROM itops.files WHERE id = :id"
+                    " mime_type, filename, entity_type, entity_id FROM itops.files WHERE id = :id"
                 ),
                 {"id": file_id},
             )
         ).first()
         if row is None:
             return None
-        return FileRow(str(row[0]).lower(), row[1], row[2], row[3], row[4], row[5])
+        return FileRow(str(row[0]).lower(), row[1], row[2], row[3], row[4], row[5], row[6],
+                       row[7])  # fmt: skip

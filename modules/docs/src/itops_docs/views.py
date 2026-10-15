@@ -21,7 +21,13 @@ from itops.sdk.types import TypeDef
 from itops_docs import service
 from itops_docs.app import module
 from itops_docs.models import Collection, Document, Version
-from itops_docs.service import DocsError, known_fields, version_attachments, version_fields
+from itops_docs.service import (
+    DocsError,
+    known_fields,
+    version_attachments,
+    version_fields,
+    version_logins,
+)
 
 module.files.upload_route(permission="docs.write")
 
@@ -121,6 +127,22 @@ def _kept_content(kept: KeptForm | None, fallback: Content) -> Content:
         return fallback
 
 
+async def _form_logins(request: Request) -> list[dict[str, Any]]:
+    """Login rows (ui.login_editor) from a submitted form, in order."""
+    form = await request.form()
+    labels = [str(v) for v in form.getlist("login_label")]
+    refs = [str(v) for v in form.getlist("login_ref")]
+    return [{"label": label, "ref": ref} for label, ref in zip(labels, refs, strict=False)]
+
+
+def _kept_logins(kept: KeptForm | None, fallback: list[dict[str, str]]) -> list[dict[str, str]]:
+    """The login rows from a form kept after a failed save (filled ones), else ``fallback``."""
+    if kept is None or "content" not in kept:
+        return fallback
+    pairs = zip(kept.getlist("login_label"), kept.getlist("login_ref"), strict=False)
+    return [{"label": label, "ref": ref} for label, ref in pairs if label or ref]
+
+
 async def _form_fields(request: Request) -> dict[str, Any]:
     """Field inputs (named f__<key>) from a submitted form; repeated names = several values."""
     form = await request.form()
@@ -182,6 +204,7 @@ async def collection(request: Request) -> dict[str, Any]:
     return {
         "page_title": col.name,
         "collection": col,
+        "access": await module.areas.access("collection", str(col.id)),
         "show_archived": show_archived,
         "rows": [_doc_row(d, names) for d in docs],
         "can_write": _can("docs.write"),
@@ -203,13 +226,28 @@ async def document(request: Request) -> dict[str, Any]:
     shown = (v.draft or v.published) if showing_draft else (v.published or v.draft)
     values = known_fields(definition, version_fields(shown)) if definition else {}
     links = await module.links.resolve(values)
+    linking = await module.links.related(f"docs:document:{doc.id}")
     related_assets = [
         {"text": r["name"], "href": r["url"], "note": r["field"]}
-        for r in await module.links.related(f"docs:document:{doc.id}")
+        for r in linking
         if r["module"] == "assets"
     ]
+    related_contracts = [
+        {"text": r["name"], "href": r["url"], "note": r["field"]}
+        for r in linking
+        if r["module"] == "contracts"
+    ]
+    sources = await module.refs.links("document", str(doc.id))  # e.g. the IT Glue import
     return {
         "page_title": doc.title,
+        "sources": [
+            {
+                "system": src.system,
+                "last_seen": _when(src.last_seen),
+                "missing_since": _when(src.missing_since),
+            }
+            for src in sources
+        ],
         "doc": doc,
         "collection": doc.collection,
         "status_tone": STATUS_TONE[doc.status],
@@ -230,11 +268,13 @@ async def document(request: Request) -> dict[str, Any]:
         ],
         "activity": activity,
         "attachments": version_attachments(shown),
+        "logins": version_logins(shown),
         "type_name": (await _type_names()).get(doc.type_key or "", doc.type_key),
         "definition": definition,
         "values": values,
         "links": links,
         "related_assets": related_assets,
+        "related_contracts": related_contracts,
         "next_review": _when(doc.next_review_at),
         "can_write": _can("docs.write") and doc.status != "archived",
         "can_publish": _can("docs.publish"),
@@ -288,6 +328,7 @@ async def new(request: Request) -> dict[str, Any]:
         "values": kept.fields() if kept else {},
         "link_options": link_options,
         "attachments": [],
+        "logins": _kept_logins(kept, []),
         "max_attachment_mb": module.files.max_bytes(attachment=True) // (1024 * 1024),
         "error": request.query_params.get("error"),
     }
@@ -301,8 +342,11 @@ async def edit(request: Request) -> dict[str, Any]:
         options = await _collection_options(s)
         doc_tags = await service.tags(s, doc.id)
         definition = await _definition(doc.type_key)
-        link_options = await module.links.options(definition)
-    working = v.draft or v.published
+        working = v.draft or v.published
+        # Keep links the picker wouldn't offer (restricted, archived) so a save keeps them.
+        link_options = await module.links.options(
+            definition, keep=version_fields(working) if definition else None
+        )
     # A failed save keeps the editor form (it has "content"); a failed details change
     # keeps the details form (it has "title").
     kept = module.forms.recall(request)
@@ -326,6 +370,7 @@ async def edit(request: Request) -> dict[str, Any]:
         ),
         "link_options": link_options,
         "attachments": version_attachments(working),
+        "logins": _kept_logins(kept_save, version_logins(working)),
         "files_dropped": bool(kept_save and kept_save.files_dropped),
         "change_note": kept_save.get("change_note") if kept_save else "",
         "title": kept_details.get("title") if kept_details else doc.title,
@@ -375,6 +420,7 @@ async def create_document(
                 s, who, collection_id=collection_id, title=title,
                 content=_parse_content(content), tags=_split_tags(tags),
                 type_key=type_key or None, fields=fields, attachments=uploaded,
+                logins=await _form_logins(request),
             )  # fmt: skip
             await s.commit()
             slug = doc.slug
@@ -407,7 +453,7 @@ async def save_document(
             ]
             await service.save(
                 s, who, doc, _parse_content(content), note=change_note, fields=fields,
-                attachments=kept + uploaded,
+                attachments=kept + uploaded, logins=await _form_logins(request),
             )  # fmt: skip
             await s.commit()
     except DocsError as exc:
@@ -494,6 +540,13 @@ async def _collection_or_404(s: Any, slug: str) -> Collection:
     return col
 
 
+def _access_cell(access: dict[str, Any]) -> Any:
+    """A collection's access as a table cell: restricted, not for AI, or nothing."""
+    if access["restricted"]:
+        return {"badge": "Restricted", "tone": "warning"}
+    return {"badge": "Not for AI", "tone": "info"} if access["no_ai"] else ""
+
+
 @module.page(
     "/collections",
     template="collections.html",
@@ -504,6 +557,7 @@ async def manage_collections(request: Request) -> dict[str, Any]:
     async with module.session() as s:
         cols = [c for c, _ in await service.collections(s)]
         counts = {c.id: await service.document_count(s, c) for c in cols}
+    access = {c.id: await module.areas.access("collection", str(c.id)) for c in cols}
     last = len(cols) - 1
 
     def arrow(c: Collection, direction: str, show: bool) -> Any:
@@ -520,6 +574,7 @@ async def manage_collections(request: Request) -> dict[str, Any]:
                 "name": {"text": c.name, "href": f"/docs/c/{c.slug}"},
                 "description": c.description,
                 "documents": counts[c.id],
+                "access": _access_cell(access[c.id]),
                 "up": arrow(c, "up", i > 0),
                 "down": arrow(c, "down", i < last),
                 "edit": {"text": "Edit", "href": f"/docs/collections/{c.slug}/edit"},
@@ -560,6 +615,7 @@ async def edit_collection(request: Request) -> dict[str, Any]:
     return {
         "page_title": f"Edit: {col.name}",
         "col": col,
+        "access": await module.areas.access("collection", str(col.id)),
         "name": kept.get("name") if kept else col.name,
         "description": kept.get("description") if kept else col.description,
         "error": request.query_params.get("error"),

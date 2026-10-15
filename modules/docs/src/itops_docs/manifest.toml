@@ -1,10 +1,10 @@
 name = "docs"
-version = "0.6.0"
+version = "0.9.1"
 title = "Docs"
 description = "IT documentation: section-based documents with drafts, publishing and version history."
 requires = ["core>=0.1"]
-optional = ["assets"]
-provides = ["lookup", "related", "link_targets", "ensure_collections", "source_status", "save_file", "upsert", "type_usage", "move_type", "archive_type"]
+optional = ["assets", "contracts"]
+provides = ["lookup", "related", "link_targets", "ensure_collections", "source_status", "save_file", "upsert", "type_usage", "move_type", "typed_documents", "archive_type", "describe_area", "area_entities", "visible_entity"]
 
 [permissions]
 "docs.read" = "Read published documentation"
@@ -13,6 +13,10 @@ provides = ["lookup", "related", "link_targets", "ensure_collections", "source_s
 "docs.types.draft" = "Draft document types and changes to them (admins; AI may draft)"
 "docs.types.approve" = { description = "Publish, retire and restore document types (admins)", human_only = true }
 "docs.collections.manage" = { description = "Create, rename, reorder and delete collections (admins)", human_only = true }
+
+# Admins can restrict a collection to AD groups or keep it out of AI connections (ADR 0012).
+[areas]
+collection = "Collection"
 
 [events]
 document_published = "A document version was published (payload: id, slug, title, version)"

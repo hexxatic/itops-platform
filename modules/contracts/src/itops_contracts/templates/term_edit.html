@@ -1,0 +1,25 @@
+{% extends "core/shell.html" %}
+{% import "core/components.html" as ui %}
+{% block content %}
+{{ ui.breadcrumb([("Contracts", "/contracts/"), (contract.name, "/contracts/c/" ~ contract.id), ("Term", None)]) }}
+{{ ui.page_header("Term: " ~ term.starts_on ~ " to " ~ term.ends_on, contract.name) }}
+{% if error %}{{ ui.alert(error, "danger") }}{% endif %}
+{% if files_dropped %}{{ ui.alert("Your changes are kept below, but files can't be: choose them again.", "warning") }}{% endif %}
+<form method="post" action="/api/contracts/terms/{{ term.id }}" class="stack" enctype="multipart/form-data">
+  {% call ui.card() %}
+  <div class="stack">
+    {{ ui.field("starts_on", "Starts", value=starts_on, type="date", required=True) }}
+    {{ ui.field("ends_on", "Ends", value=ends_on, type="date", required=True) }}
+    {% if can_costs %}
+    {{ ui.field("cost", "Cost", value=cost, help="In dollars, e.g. 1250.00.") }}
+    {{ ui.select("cost_period", "Billing", periods, selected=cost_period) }}
+    {% endif %}
+    {{ ui.field("po_number", "PO number", value=po_number) }}
+    {{ ui.field("seats_bought", "Seats bought", value=seats_bought, type="number") }}
+    {{ ui.field("seats_in_use", "Seats in use", value=seats_in_use, type="number") }}
+  </div>
+  {% endcall %}
+  {% call ui.card("Files") %}{{ ui.attachment_editor(files, max_mb=max_attachment_mb) }}{% endcall %}
+  <div class="actions">{{ ui.button("Save", type="submit", variant="primary") }}{{ ui.button("Cancel", href="/contracts/c/" ~ contract.id) }}</div>
+</form>
+{% endblock %}

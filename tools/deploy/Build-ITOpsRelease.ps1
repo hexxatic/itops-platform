@@ -95,6 +95,8 @@ Get-ChildItem $stage -Recurse -Directory -Filter __pycache__ | Remove-Item -Recu
 $PSNativeCommandUseErrorActionPreference = $false
 & $py -I -m compileall -q -j 0 --invalidation-mode unchecked-hash "$stage\python\Lib" | Out-Null
 $PSNativeCommandUseErrorActionPreference = $true
+# compileall exits 1 for those skipped files; don't let that become the script's exit code.
+$global:LASTEXITCODE = 0
 
 $zip = Join-Path $repo "$OutDir\itops-$Version.zip"
 if (Test-Path $zip) { Remove-Item $zip -Force }

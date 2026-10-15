@@ -1,0 +1,21 @@
+{% extends "core/shell.html" %}
+{% import "core/components.html" as ui %}
+{% block content %}
+{{ ui.breadcrumb([("Reports", "/reports/"), ("Datasets", "/reports/datasets"), (ds.title, "/reports/d/" ~ ds.key), ("Edit row" if row_id else "Add a row", None)]) }}
+{{ ui.page_header("Edit row" if row_id else "Add a row", ds.title) }}
+{% if error %}{{ ui.alert(error, "danger") }}{% endif %}
+{% if hidden_money %}<p class="muted">Money columns aren't shown: they need permission to see costs. Saving keeps them as they were.</p>{% endif %}
+{% call ui.card() %}
+<form method="post" action="{{ action }}" class="stack">
+  {{ ui.field_inputs(definition, values, required_note="required") }}
+  <div class="actions">
+    {{ ui.button("Save", type="submit", variant="primary") }}
+    {% if not row_id %}<button class="btn btn-secondary" type="submit" name="again" value="1">Save and add another</button>{% endif %}
+    {{ ui.button("Cancel", href="/reports/d/" ~ ds.key, variant="ghost") }}
+  </div>
+</form>
+{% if row_id %}
+<div class="actions">{{ ui.action_button("Delete row", action ~ "/delete", "danger", confirm="Delete this row?") }}</div>
+{% endif %}
+{% endcall %}
+{% endblock %}

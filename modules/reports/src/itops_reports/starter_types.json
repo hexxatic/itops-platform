@@ -1,0 +1,52 @@
+[
+  {
+    "key": "file_change",
+    "name": "File change",
+    "description": "One kind of change to one file by one account, from file-system auditing. Count collapses repeated identical events.",
+    "fields": [
+      {"key": "time", "label": "Time", "kind": "datetime", "required": true},
+      {"key": "user", "label": "User", "kind": "text", "required": true},
+      {"key": "file", "label": "File", "kind": "text", "required": true},
+      {"key": "action", "label": "Action", "kind": "text", "help": "What was done, e.g. Write, Delete, ChangePermissions (several joined with +)"},
+      {"key": "process", "label": "Program", "kind": "text"},
+      {"key": "count", "label": "Count", "kind": "number"}
+    ]
+  },
+  {
+    "key": "purchase",
+    "name": "Purchase",
+    "description": "Something bought: when, from whom, what, how many and what it cost.",
+    "fields": [
+      {"key": "date", "label": "Date", "kind": "date", "required": true},
+      {"key": "vendor", "label": "Vendor", "kind": "text"},
+      {"key": "category", "label": "Category", "kind": "select", "options": ["Laptop", "Desktop", "Monitor", "Dock", "Keyboard and mouse", "Headset", "Other peripheral", "Other"]},
+      {"key": "item", "label": "Item", "kind": "text", "required": true},
+      {"key": "quantity", "label": "Quantity", "kind": "number"},
+      {"key": "unit_cost", "label": "Unit cost", "kind": "money"},
+      {"key": "total", "label": "Total", "kind": "money"},
+      {"key": "reason", "label": "Reason", "kind": "select", "options": ["New hire", "Replacement", "Upgrade", "Spare", "Other"]},
+      {"key": "location", "label": "Location", "kind": "text"},
+      {"key": "reference", "label": "Order or invoice", "kind": "text"},
+      {"key": "notes", "label": "Notes", "kind": "longtext"}
+    ]
+  },
+  {
+    "key": "employee",
+    "name": "Employee (no names)",
+    "description": "One person's employment record from HR, without names or personal details: for headcount, hires and terminations.",
+    "fields": [
+      {"key": "status", "label": "Status", "kind": "text"},
+      {"key": "pay_type", "label": "Pay type", "kind": "text"},
+      {"key": "dept_group", "label": "Department group", "kind": "text"},
+      {"key": "department", "label": "Department", "kind": "text"},
+      {"key": "location", "label": "Location", "kind": "text"},
+      {"key": "position", "label": "Position", "kind": "text"},
+      {"key": "remote_type", "label": "Remote", "kind": "text"},
+      {"key": "hire_date", "label": "Hired", "kind": "date"},
+      {"key": "rehire_date", "label": "Rehired", "kind": "date"},
+      {"key": "termination_date", "label": "Terminated", "kind": "date"},
+      {"key": "previous_termination_date", "label": "Previously terminated", "kind": "date"},
+      {"key": "is_turnover", "label": "Counts as turnover", "kind": "select", "options": ["Yes", "No"]}
+    ]
+  }
+]

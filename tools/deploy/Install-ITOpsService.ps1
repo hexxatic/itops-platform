@@ -97,6 +97,7 @@ if (Test-Path $envFile) {
     $secretKey = [Convert]::ToBase64String($bytes)
     $clientSecret = if ($EntraClientSecret) { [Net.NetworkCredential]::new('', $EntraClientSecret).Password } else { '' }
     $hosts = ConvertTo-Json -Compress @($e.Hostname, '127.0.0.1', '127.0.0.1:*', 'localhost', 'localhost:*')
+    $permissionGroups = if ($settings.PermissionGroups) { ConvertTo-Json -Compress $settings.PermissionGroups } else { '{}' }
     @(
         "# IT-Ops $Environment. Read by the service at startup (restart it after edits). Secrets: never copy this file elsewhere."
         'ITOPS_ENV=production'
@@ -113,6 +114,7 @@ if (Test-Path $envFile) {
         "ITOPS_ENTRA_CLIENT_ID=$($settings.EntraClientId)"
         "ITOPS_ENTRA_CLIENT_SECRET=$clientSecret"
         "ITOPS_SECRET_KEY=$secretKey"
+        "ITOPS_PERMISSION_GROUPS=$permissionGroups"
     ) | Set-Content -Path $envFile -Encoding utf8
     Remove-Variable secretKey, clientSecret
     $acl = New-Object Security.AccessControl.FileSecurity

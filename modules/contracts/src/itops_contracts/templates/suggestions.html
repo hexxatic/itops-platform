@@ -1,0 +1,63 @@
+{% extends "core/shell.html" %}
+{% import "core/components.html" as ui %}
+{% block head %}{% if not run.finished %}<meta http-equiv="refresh" content="5">{% endif %}{% endblock %}
+{% block content %}
+{{ ui.breadcrumb([("Contracts", "/contracts/"), (contract.name, "/contracts/c/" ~ contract.id), ("Suggestions", None)]) }}
+{{ ui.page_header("Suggestions from " ~ run.filename, contract.name ~ " · term " ~ term.starts_on ~ " to " ~ term.ends_on) }}
+{% if error %}{{ ui.alert(error, "danger") }}{% endif %}
+
+{% if not run.finished %}
+  {% call ui.card() %}
+    {{ ui.progress("Reading " ~ run.filename ~ (" (waiting for another file first)" if run.status == "queued" else "")) }}
+    <p class="muted">A local AI model is reading the file; this usually takes one to three minutes. You can leave this page and come back from the contract.</p>
+  {% endcall %}
+{% elif run.status == "failed" %}
+  {{ ui.alert("Couldn't read the file: " ~ run.error, "danger") }}
+  <div class="actions">
+    {{ ui.action_button("Try again", "/api/contracts/terms/" ~ term.id ~ "/suggest/" ~ run.file_id, variant="primary") }}
+    {{ ui.button("Back to contract", href="/contracts/c/" ~ contract.id) }}
+  </div>
+{% else %}
+  {% if run.status == "reviewed" %}{{ ui.alert("These suggestions were reviewed already.", "info") }}{% endif %}
+  {% call(part) ui.review_layout() %}
+    {% if part == "main" %}
+      {% call ui.card("Check each one against the document") %}
+      {% if rows %}
+      <form method="post" action="/api/contracts/terms/{{ term.id }}/suggestions/{{ run.id }}" class="stack">
+        {% for r in rows %}{% set f = r.field %}{% set sg = r.suggestion %}
+        <div class="suggestion">
+          {% if f.prefill %}
+            {{ ui.checkbox("accept__" ~ f.key, f.label, checked=run.status == "done") }}
+            {% if f.kind == "bool" %}
+              {{ ui.select("value__" ~ f.key, "Suggested", [("true", "Yes"), ("false", "No")], selected="true" if sg.value else "false") }}
+            {% elif f.kind == "select" %}
+              {{ ui.select("value__" ~ f.key, "Suggested", periods, selected=sg.value) }}
+            {% else %}
+              {{ ui.field("value__" ~ f.key, "Suggested", value=sg.value, type="date" if f.kind == "date" else "text") }}
+            {% endif %}
+          {% else %}
+            {{ ui.field("value__" ~ f.key, f.label ~ " (you type it)", value="", type="number", help="Not filled in for you: read the quote, and type the number only if it really is the notice period.") }}
+          {% endif %}
+          <p class="muted">Now: {{ r.current if r.current not in (None, "") else "empty" }}</p>
+          <blockquote class="suggestion-quote">“{{ sg.quote }}”</blockquote>
+          {{ ui.show_in_document("doc-viewer", sg.page, sg.quote) }}
+        </div>
+        {% endfor %}
+        <div class="actions">
+          {{ ui.button("Save the ticked values", type="submit", variant="primary") }}
+          {{ ui.button("Cancel", href="/contracts/c/" ~ contract.id) }}
+        </div>
+      </form>
+      {% else %}
+        <p class="muted">Nothing the file says could be backed up by an exact quote, so there's nothing to suggest.</p>
+        {{ ui.button("Back to contract", href="/contracts/c/" ~ contract.id) }}
+      {% endif %}
+      {% if run.dropped %}<p class="muted">{{ run.dropped }} more answer(s) were left out: their quote wasn't in the file or didn't contain the value.</p>{% endif %}
+      <p class="muted">Read by {{ run.model or "a local model" }}. Nothing is saved until you save.</p>
+      {% endcall %}
+    {% else %}
+      {{ ui.document_viewer(file, pages, id="doc-viewer") }}
+    {% endif %}
+  {% endcall %}
+{% endif %}
+{% endblock %}

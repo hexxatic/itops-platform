@@ -1,0 +1,15 @@
+name = "news"
+version = "0.1.1"
+title = "News"
+description = "Updates to the app and announcements from the IT department, newest first."
+requires = ["core>=0.1"]
+optional = []
+provides = []
+
+[permissions]
+"news.read" = "Read published news"
+"news.write" = "Draft news posts"
+"news.publish" = { description = "Publish, edit published, pin, archive and delete news posts", human_only = true }
+
+[events]
+post_published = "A news post was published (payload: id, slug, title, category)"

@@ -9,6 +9,7 @@ import asyncio
 import base64
 import hashlib
 import html
+import os
 import re
 import secrets
 import uuid
@@ -26,7 +27,7 @@ from sqlalchemy import text
 from itops.core import identity as identity_module
 from itops.core.app import create_app
 from itops.core.config import Settings
-from itops.core.directory import DirectoryAnswer, parse
+from itops.core.directory import DirectoryAnswer, check_user, parse
 from itops.core.entra import EntraAuth
 from itops.core.oauth import redirect_allowed
 
@@ -268,6 +269,20 @@ def test_directory_answers_are_parsed() -> None:
     assert parse("garbage").status == "error"
 
 
+@pytest.mark.skipif(
+    not os.environ.get("ITOPS_TEST_DIRECTORY_UPN"),
+    reason="needs AD: ITOPS_TEST_DIRECTORY_UPN and ITOPS_TEST_DIRECTORY_GROUP",
+)
+async def test_directory_check_finds_groups_against_real_ad() -> None:
+    """Live: pick an account whose name has a comma ("Doe, Jane": its DN escapes it); its group
+    must still be found (DN-based LDAP filters missed it)."""
+    upn = os.environ["ITOPS_TEST_DIRECTORY_UPN"]
+    group = os.environ.get("ITOPS_TEST_DIRECTORY_GROUP", "")
+    answer = await check_user(upn, [group, "No-Such-Group-For-ITOps"])
+    assert answer == DirectoryAnswer("active", [group])
+    assert (await check_user("nobody@example.com", [group])).status == "missing"
+
+
 async def test_admins_see_and_cut_off_every_ai_connection(
     database_url: str, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -310,6 +325,8 @@ async def test_ad_outages_dont_flood_ad(database_url: str, monkeypatch: pytest.M
     async with running(database_url, monkeypatch, directory) as c:
         await c.get("/auth/login")
         await c.get("/auth/callback?code=abc&state=s1")
+        assert len(calls) == 1  # sign-in asks AD about the groups the token left out
+        calls.clear()
         made = await c.post("/account/tokens", data={"name": "probe", "days": "7"})
         token = re.search(r"(itops_[A-Za-z0-9_-]{20,})", made.text)[1]  # type: ignore[index]
         bearer = {"Authorization": f"Bearer {token}"}

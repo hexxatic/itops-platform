@@ -55,6 +55,16 @@ class RecordField(Base):
     value_number: Mapped[float | None] = mapped_column(Float, default=None)
 
 
+class Identity(Base):
+    """A normalised serial, MAC or host name of a record (ADR 0017; rebuilt with it)."""
+
+    __tablename__ = "identities"
+
+    record_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("assets.records.id"), primary_key=True)
+    kind: Mapped[str] = mapped_column(Unicode(10), primary_key=True)
+    value: Mapped[str] = mapped_column(Unicode(200), primary_key=True)
+
+
 class Proposal(Base):
     """An AI-drafted new record or change, waiting for a person (assets.publish)."""
 

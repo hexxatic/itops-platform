@@ -1,0 +1,34 @@
+{% extends "core/shell.html" %}
+{% import "core/components.html" as ui %}
+{% block content %}
+{{ ui.breadcrumb([("Reports", "/reports/"), ("Datasets", "/reports/datasets"), (ds.title, None)]) }}
+{% call ui.page_header(ds.title, ds.description or None) %}
+  {% if editable %}
+    {{ ui.button("Paste rows", href="/reports/d/" ~ ds.key ~ "/paste") }}
+    {{ ui.button("Add a row", href="/reports/d/" ~ ds.key ~ "/rows/new", variant="primary") }}
+  {% endif %}
+  {% if can_publish %}{{ ui.button("Settings", href="/reports/d/" ~ ds.key ~ "/settings") }}{% endif %}
+{% endcall %}
+{% if error %}{{ ui.alert(error, "danger") }}{% endif %}
+{% if request.query_params.get("added") %}{{ ui.alert("Added " ~ request.query_params.get("added") ~ " rows.", "success") }}{% endif %}
+
+<p>
+  {{ ui.badge(mode, "info") }}
+  {% if ds.mode == "synced" and ds.source %}<span class="muted">by {{ ds.source }}</span>{% endif %}
+  {% if ds.retention_days %}<span class="muted">· rows are kept {{ ds.retention_days }} days{% if time_label %} (by {{ time_label }}){% endif %}</span>{% endif %}
+</p>
+{% if hidden_money %}<p class="muted">Money columns are left out: they need permission to see costs.</p>{% endif %}
+
+{% call ui.card("Rows") %}
+<div class="row">
+  <p class="muted">{{ total }} row{{ "" if total == 1 else "s" }}{% if total > rows|length %}; the newest {{ rows|length }} are shown, downloads have all of them{% endif %}.</p>
+  {{ ui.export_links(export_url) }}
+</div>
+{{ ui.table(columns, rows, empty="No rows yet.") }}
+{% endcall %}
+
+{% if access %}
+{% call ui.card("Who sees this dataset") %}{{ ui.access_summary(access) }}{% endcall %}
+{% endif %}
+{% call ui.card("Activity") %}{{ ui.activity(history) }}{% endcall %}
+{% endblock %}

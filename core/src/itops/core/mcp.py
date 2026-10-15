@@ -189,12 +189,21 @@ def _add_type_tools(server: MCPServer, runtime: Runtime, modules: list[str]) -> 
             )
         return module
 
+    async def hidden_types(module: str) -> frozenset[str]:
+        """Types the caller can't see: a module whose area kind "type" is its record types
+        (ADR 0012) keeps restricted ones out of these tools too."""
+        if "type" not in runtime.areas.kinds.get(module, {}):
+            return frozenset()
+        return await runtime.areas.hidden(auth.current(), module, "type")
+
     async def itops_list_types(module: str, include_drafts: bool = False) -> list[dict[str, Any]]:
         maker = runtime.sessionmaker
         assert maker is not None
         auth.require(f"{_module(module)}.read")
         async with maker() as s:
             views = await runtime.types.list_types(s, module, include_drafts=include_drafts)
+        hidden = await hidden_types(module)
+        views = [v for v in views if v.key not in hidden]
         return [
             {
                 "key": v.key,
@@ -212,7 +221,7 @@ def _add_type_tools(server: MCPServer, runtime: Runtime, modules: list[str]) -> 
         auth.require(f"{_module(module)}.read")
         async with maker() as s:
             view = await runtime.types.get(s, module, key)
-        if view is None:
+        if view is None or key in await hidden_types(module):
             raise ValueError(f"No type '{key}' in {module}")
         return view.as_dict(include_draft=include_draft)
 
@@ -227,6 +236,8 @@ def _add_type_tools(server: MCPServer, runtime: Runtime, modules: list[str]) -> 
         maker = runtime.sessionmaker
         assert maker is not None
         definition = {"name": name, "description": description, "fields": fields}
+        if key and key in await hidden_types(_module(module)):
+            raise ValueError(f"No type '{key}' in {module}")
         async with maker() as s:
             view = await runtime.types.draft(s, _module(module), definition, key=key, note=note)
             await s.commit()

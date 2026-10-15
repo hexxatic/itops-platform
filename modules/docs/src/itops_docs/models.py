@@ -63,6 +63,7 @@ class Version(Base):
     content: Mapped[str] = mapped_column(UnicodeText)
     fields: Mapped[str | None] = mapped_column(UnicodeText, default=None)  # JSON values
     attachments: Mapped[str | None] = mapped_column(UnicodeText, default=None)  # JSON list
+    logins: Mapped[str | None] = mapped_column(UnicodeText, default=None)  # JSON [{label, ref}]
     change_note: Mapped[str] = mapped_column(Unicode(500), default="")
     author_user: Mapped[str] = mapped_column(Unicode(200))
     author_via_ai: Mapped[bool] = mapped_column(Boolean, default=False)

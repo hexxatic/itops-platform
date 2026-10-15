@@ -30,6 +30,9 @@ class Principal:
     permissions: frozenset[str]
     via_ai: bool = False
     client: str = "web"  # "web" | "api" | "mcp" | "connector" (audit attribution)
+    # Their AD groups (sAMAccountNames, lower case): what restricted areas they may see
+    # (ADR 0012, core/areas.py). Roles still decide what they may do.
+    groups: frozenset[str] = frozenset()
 
     def has(self, permission: str) -> bool:
         """May this connection exercise ``permission``? Never a human-only one via AI."""

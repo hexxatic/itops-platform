@@ -219,3 +219,24 @@ async def test_typos_are_corrected_against_our_own_vocabulary(
         # AI tools get the same correction, and are told about it.
         found = await mcp.call("docs_search", query="gainseker")
         assert "corrected_query" in str(found) and "Gainseeker on RDS" in str(found)
+
+
+async def test_attachment_contents_are_searchable_by_page(
+    database_url: str, tmp_path: Path
+) -> None:
+    async with running(database_url, tmp_path) as (web, _):
+        content = Content(blocks=[TextBlock(html="<p>See the attached notes.</p>")])
+        r = await web.post(
+            "/api/docs/documents",
+            data={"title": "Vendor escalation", "collection_id": "1",
+                  "content": content.model_dump_json()},
+            files={"attachments": ("escalation-notes.txt",
+                                   b"Call the zanzibarite hotline after hours.", "text/plain")},
+        )  # fmt: skip
+        slug = r.headers["location"].split("/docs/d/")[1].split("?")[0]
+        await web.post(f"/api/docs/documents/{slug}/publish")
+        await wait_for_search(module)
+        hits = await module.search.query("zanzibarite hotline")
+        assert [h.title for h in hits] == ["Vendor escalation"]
+        assert hits[0].label == "escalation-notes.txt"
+        assert hits[0].url == f"/docs/d/{slug}#attachments"

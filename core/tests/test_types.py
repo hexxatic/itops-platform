@@ -18,6 +18,7 @@ from itops.core.types import (
     TypeProblem,
     TypeStore,
     check_compatible,
+    credential_ref,
     parse_definition,
     validate_values,
 )
@@ -135,6 +136,16 @@ def test_1password_links_are_accepted() -> None:
     d = parse_definition(VENDOR)
     link = "https://start.1password.com/open/i?a=ABC&v=DEF&i=GHI&h=example.1password.com"
     assert validate_values(d, {"account_number": "1", "login": link})["login"] == link
+
+
+def test_credential_ref_checks_references_outside_types() -> None:
+    assert credential_ref("  op://IT/Console/password ", "Console") == "op://IT/Console/password"
+    spaced = "op://IT/Keyence service/password"  # 1Password names may contain spaces
+    assert credential_ref(spaced) == spaced
+    with pytest.raises(TypeProblem):
+        credential_ref("op://IT/ Keyence/password")
+    with pytest.raises(TypeProblem, match=r"^Console: paste a 1Password reference"):
+        credential_ref("Hunter2!", "Console")
 
 
 def test_required_unknown_and_wrong_values() -> None:

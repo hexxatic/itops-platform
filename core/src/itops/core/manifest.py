@@ -9,6 +9,7 @@ from __future__ import annotations
 import re
 import tomllib
 from importlib import resources
+from typing import Literal
 
 from packaging.specifiers import InvalidSpecifier, SpecifierSet
 from packaging.version import InvalidVersion, Version
@@ -61,17 +62,46 @@ def parse_requirement(req: str) -> tuple[str, SpecifierSet]:
 class Permission(BaseModel):
     """A declared permission. ``human_only`` ones can never be exercised through an AI
     connection (MCP), whatever the user's role: that is how "AI drafts, humans approve"
-    is enforced platform-wide (ADR 0003)."""
+    is enforced platform-wide (ADR 0003).
+
+    ``grant``: ``"role"`` (the default) means roles grant it by its last word (reader
+    ``*.read``, editor ``*.write``, publisher ``*.publish``); ``"group"`` means no role
+    does: the deployment names the AD groups that hold it (``ITOPS_PERMISSION_GROUPS``),
+    for things only a few people should have (ADR 0014). Admins hold everything either
+    way."""
 
     model_config = ConfigDict(extra="forbid", frozen=True)
 
     description: str
     human_only: bool = False
+    grant: Literal["role", "group"] = "role"
 
 
 SCHEDULE_RE = re.compile(r"^(manual|every \d+[mhd]|daily \d{2}:\d{2})$")
 OWNS_RE = re.compile(r"^[a-z][a-z0-9_]*\.[a-z][a-z0-9_]*$")
 SECRET_RE = re.compile(r"^[a-z][a-z0-9_]*$")
+
+
+class JobDecl(BaseModel):
+    """A declared scheduled job (ADR 0014): housekeeping on the module's own data, e.g.
+    noticing that a contract's renewal came due. Not a flow of data in or out (that's a
+    connector) and not something people run (that's a tool action). ``schedule``: ``every
+    <n>m|h|d`` or ``daily HH:MM`` (server local time). ``permissions``: the module's own,
+    never human-only; the job acts as itself, not as a person."""
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    title: str
+    description: str = ""
+    schedule: str
+    permissions: list[str] = Field(default_factory=list[str])
+
+    @field_validator("schedule")
+    @classmethod
+    def _schedule(cls, v: str) -> str:
+        if v == "manual" or not SCHEDULE_RE.match(v):
+            raise ValueError("a job's schedule must be 'every <n>m|h|d' or 'daily HH:MM'")
+        return v
 
 
 class ConnectorDecl(BaseModel):
@@ -177,8 +207,9 @@ class ActionDecl(BaseModel):
 
     ``permission``: one of the module's human-only permissions (AI may only request a
     run). ``danger``: safe, caution or dangerous (the last two ask to confirm).
-    ``timeout``: minutes. ``endpoints``: the remote endpoints it uses ("HOST/Endpoint"),
-    shown to admins. Every action runs one at a time."""
+    ``timeout``: minutes. ``endpoints``: the remote endpoints it may use ("HOST/Endpoint"),
+    shown to admins and enforced: ``ctx.powershell`` refuses any other. Every action runs
+    one at a time."""
 
     model_config = ConfigDict(extra="forbid", frozen=True)
 
@@ -243,6 +274,33 @@ class Manifest(BaseModel):
     connectors: dict[str, ConnectorDecl] = Field(default_factory=dict[str, ConnectorDecl])
     # Tool action short name -> declaration (ADR 0011). Run as "<module>.<name>".
     actions: dict[str, ActionDecl] = Field(default_factory=dict[str, ActionDecl])
+    # Scheduled jobs (ADR 0014): [jobs.<name>].
+    jobs: dict[str, JobDecl] = Field(default_factory=dict[str, JobDecl])
+    # Area kind -> title (ADR 0012): parts of the module admins can restrict to AD groups
+    # or keep out of AI ("collection" = "Collection"). Kind "type" means the module's
+    # record types (keys = type keys), which the core's type tools then filter too.
+    areas: dict[str, str] = Field(default_factory=dict[str, str])
+
+    @field_validator("areas")
+    @classmethod
+    def _areas(cls, v: dict[str, str]) -> dict[str, str]:
+        for kind in v:
+            if not SECRET_RE.match(kind):
+                raise ValueError(f"area kind {kind!r}: lowercase letters, digits and underscores")
+        return v
+
+    @model_validator(mode="after")
+    def _areas_described(self) -> Manifest:
+        """A module with areas says what each one is called (the access page shows it) and
+        what's in it (a restriction marks those search entries at once)."""
+        missing = {"describe_area", "area_entities"} - set(self.provides)
+        if self.areas and missing:
+            raise ValueError(
+                "a module with [areas] provides 'describe_area' ((kind, key) -> {name, url} "
+                "or None) and 'area_entities' ((kind, key) -> {kind, ids}: its search "
+                f"entries in that area); missing: {', '.join(sorted(missing))}"
+            )
+        return self
 
     @field_validator("name")
     @classmethod
@@ -301,9 +359,25 @@ class Manifest(BaseModel):
                 )
         return self
 
+    @model_validator(mode="after")
+    def _job_permissions(self) -> Manifest:
+        """A job holds only the module's own permissions, and never a human-only one."""
+        for name, job in self.jobs.items():
+            for p in job.permissions:
+                perm = self.permissions.get(p)
+                if perm is None:
+                    raise ValueError(f"job {name!r}: permission {p!r} not declared")
+                if perm.human_only:
+                    raise ValueError(f"job {name!r}: {p!r} is human-only; a job can't hold it")
+        return self
+
     @property
     def uses_types(self) -> bool:
         return f"{self.name}.types.draft" in self.permissions
+
+    @property
+    def group_granted_permissions(self) -> frozenset[str]:
+        return frozenset(k for k, p in self.permissions.items() if p.grant == "group")
 
     @property
     def human_only_permissions(self) -> frozenset[str]:

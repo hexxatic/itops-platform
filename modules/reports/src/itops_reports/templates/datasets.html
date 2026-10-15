@@ -1,0 +1,16 @@
+{% extends "core/shell.html" %}
+{% import "core/components.html" as ui %}
+{% block content %}
+{{ ui.breadcrumb([("Reports", "/reports/"), ("Datasets", None)]) }}
+{% call ui.page_header("Datasets", "The data reports are built on: written by connectors, or typed in by people.") %}
+  {% if can_publish %}{{ ui.button("New dataset", href="/reports/datasets/new", variant="primary") }}{% endif %}
+{% endcall %}
+{% if error %}{{ ui.alert(error, "danger") }}{% endif %}
+{% call ui.card() %}
+{{ ui.table([("title", "Dataset"), ("mode", "Where rows come from"), ("rows", "Rows"), ("kept", "Kept")], datasets,
+            empty="No datasets yet.") }}
+{% endcall %}
+{% if can_publish %}
+<p class="muted">A dataset's columns are a column type. <a href="/reports/types">Manage column types</a>.</p>
+{% endif %}
+{% endblock %}

@@ -93,6 +93,12 @@ def validate(module: Module) -> list[str]:
         if not TOOL_NAME_RE.match(name):
             problems.append(f"connector {name!r}: name must be lowercase snake_case")
 
+    declared_j, registered_j = set(m.jobs), {j.name for j in module.jobs}
+    for missing in sorted(declared_j - registered_j):
+        problems.append(f"manifest declares job {missing!r} but no @module.job({missing!r})")
+    for extra in sorted(registered_j - declared_j):
+        problems.append(f"job {extra!r} is registered but not declared in [jobs]")
+
     declared_a, registered_a = set(m.actions), {a.name for a in module.actions}
     for missing in sorted(declared_a - registered_a):
         problems.append(f"manifest declares action {missing!r} but no @module.action({missing!r})")

@@ -1,0 +1,55 @@
+{% extends "core/shell.html" %}
+{% import "core/components.html" as ui %}
+{% block content %}
+{% if mode == "new" %}
+  {{ ui.page_header("New contract", "The contract and its current term. Renewing later adds the next term.") }}
+{% else %}
+  {% call ui.page_header("Edit: " ~ contract.name) %}{{ ui.button("Back to contract", href="/contracts/c/" ~ contract.id) }}{% endcall %}
+{% endif %}
+{% if error %}{{ ui.alert(error, "danger") }}{% endif %}
+{% if mode == "new" and can_suggest %}
+{% call ui.card("Start from a file") %}
+<p>Upload the contract, quote, invoice or vendor email. A local AI model reads it and fills in what it can find (name, vendor, dates, seats, PO number{% if can_costs %}, cost{% endif %}), each with the sentence it came from, next to the document. You check it and create the contract. Nothing leaves the network.</p>
+<form method="post" action="/api/contracts/from-file" enctype="multipart/form-data" class="stack">
+  <label class="field"><span class="field-label">File</span>
+    <input class="input" type="file" name="file" required accept=".pdf,.doc,.docx,.xls,.xlsx,.msg,.txt,.csv">
+    <span class="field-help">PDF, Word, Excel or Outlook, up to {{ max_attachment_mb }} MB. Scanned PDFs without text can't be read: fill those in below.</span>
+  </label>
+  <div class="actions">{{ ui.button("Read it", type="submit", variant="primary") }}</div>
+</form>
+{% endcall %}
+<h2>Or fill it in yourself</h2>
+{% endif %}
+<form method="post" action="{{ '/api/contracts/contracts' if mode == 'new' else '/api/contracts/contracts/' ~ contract.id }}" class="stack"{% if mode == "new" %} enctype="multipart/form-data"{% endif %}>
+  {% call ui.card("Contract") %}
+  <div class="stack">
+    {{ ui.field("name", "Name", value=name, required=True, help="What people call it, e.g. \"Sophos endpoint protection\".") }}
+    {{ ui.field("vendor", "Vendor", value=vendor) }}
+    {{ ui.select("category", "Category", categories, selected=category) }}
+    {{ ui.select("owner", "Owner", owners, selected=owner) }}
+    {{ ui.field("notice_days", "Notice period (days)", value=notice_days, type="number",
+                help="How long before the end the vendor must be told. Reminders count down to the end minus this.") }}
+    {{ ui.checkbox("auto_renews", "Renews automatically unless cancelled", checked=auto_renews) }}
+    {{ ui.field("description", "Notes", value=description, type="textarea") }}
+    {{ ui.field_inputs(link_definition, links, link_options=link_options) }}
+  </div>
+  {% endcall %}
+  {% if mode == "new" %}
+  {% call ui.card("Current term") %}
+  <div class="stack">
+    {{ ui.field("starts_on", "Starts", value=starts_on, type="date", required=True) }}
+    {{ ui.field("ends_on", "Ends", value=ends_on, type="date", required=True) }}
+    {% if can_costs %}
+    {{ ui.field("cost", "Cost", value=cost, help="In dollars, e.g. 1250.00.") }}
+    {{ ui.select("cost_period", "Billing", periods, selected=cost_period) }}
+    {% endif %}
+    {{ ui.field("po_number", "PO number", value=po_number) }}
+    {{ ui.field("seats_bought", "Seats bought", value=seats_bought, type="number", help="Only if it's licensed per seat.") }}
+    {{ ui.field("seats_in_use", "Seats in use", value=seats_in_use, type="number") }}
+  </div>
+  {% endcall %}
+  {% call ui.card("Files") %}{{ ui.attachment_editor([], max_mb=max_attachment_mb) }}{% endcall %}
+  {% endif %}
+  <div class="actions">{{ ui.button("Save", type="submit", variant="primary") }}{{ ui.button("Cancel", href="/contracts/" if mode == "new" else "/contracts/c/" ~ contract.id) }}</div>
+</form>
+{% endblock %}

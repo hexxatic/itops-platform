@@ -1,0 +1,91 @@
+{% extends "core/shell.html" %}
+{% import "core/components.html" as ui %}
+{% block content %}
+{% if choose is not none %}
+{{ ui.breadcrumb([("Reports", "/reports/"), ("New report", None)]) }}
+{{ ui.page_header("New report", "Which dataset does it show?") }}
+{% if error %}{{ ui.alert(error, "danger") }}{% endif %}
+{% call ui.card() %}
+{{ ui.link_list(choose, empty="No datasets yet: create one under Datasets first.") }}
+{% endcall %}
+{% else %}
+{{ ui.breadcrumb([("Reports", "/reports/"), (d.title, "/reports/r/" ~ d.key), ("Edit", None)] if d else [("Reports", "/reports/"), ("New report", None)]) }}
+{{ ui.page_header("Edit " ~ d.title if d else "New report", "From the dataset " ~ ds.title ~ ".") }}
+{% if error %}{{ ui.alert(error, "danger") }}{% endif %}
+<form method="post" action="{{ action }}" class="stack">
+  <input type="hidden" name="dataset" value="{{ ds.key }}">
+  {% call ui.card("About") %}
+  {{ ui.field("title", "Title", value=title, required=True) }}
+  {{ ui.field("description", "Description", value=description, help="One line: what this report is for.") }}
+  {% if has_time %}{{ ui.field("window_days", "Show the last N days by default", value=window_days, type="number", help="Empty: everything the dataset keeps. Viewers can still pick another time.") }}{% endif %}
+  {% endcall %}
+
+  {% call ui.card("Always only rows where…") %}
+  <p class="muted">Leave a line's column empty to skip it. For example: File doesn't end with Thumbs.db.</p>
+  {% for f in filters %}{% set i = loop.index0 %}
+  <div class="grid">
+    {{ ui.select("flt_field_" ~ i, "Column", fields, selected=(k.get("flt_field_" ~ i, "") if kept else f.get("field", ""))) }}
+    {{ ui.select("flt_op_" ~ i, "Condition", ops, selected=(k.get("flt_op_" ~ i, "is") if kept else f.get("op", "is"))) }}
+    {{ ui.field("flt_value_" ~ i, "Value", value=(k.get("flt_value_" ~ i, "") if kept else f.get("value", ""))) }}
+  </div>
+  {% endfor %}
+  {% endcall %}
+
+  {% call ui.card("Tiles") %}
+  <p class="muted">Big numbers at the top. A tile can count only some rows: for example "Deletes": rows where Action contains Delete.</p>
+  {% for t in tiles %}{% set i = loop.index0 %}
+  <div class="grid">
+    {{ ui.field("tile_label_" ~ i, "Label", value=(k.get("tile_label_" ~ i, "") if kept else t.get("label", ""))) }}
+    {{ ui.select("tile_kind_" ~ i, "Shows", measures, selected=(k.get("tile_kind_" ~ i, "rows") if kept else t.get("kind", "rows"))) }}
+    {{ ui.select("tile_field_" ~ i, "of column", fields, selected=(k.get("tile_field_" ~ i, "") if kept else t.get("field", ""))) }}
+    {{ ui.select("tile_ffield_" ~ i, "Only where", fields, selected=(k.get("tile_ffield_" ~ i, "") if kept else t.get("ffield", ""))) }}
+    {{ ui.select("tile_fop_" ~ i, "Condition", ops, selected=(k.get("tile_fop_" ~ i, "is") if kept else t.get("fop", "is"))) }}
+    {{ ui.field("tile_fvalue_" ~ i, "Value", value=(k.get("tile_fvalue_" ~ i, "") if kept else t.get("fvalue", ""))) }}
+  </div>
+  {% endfor %}
+  {% endcall %}
+
+  {% call ui.card("Breakdowns") %}
+  <p class="muted">Ranked lists: the measure grouped by a column. For file paths, "Group by the first N parts" groups by folder.</p>
+  {% for b in breakdowns %}{% set i = loop.index0 %}
+  <div class="grid">
+    {{ ui.field("bd_label_" ~ i, "Label", value=(k.get("bd_label_" ~ i, "") if kept else b.get("label", ""))) }}
+    {{ ui.select("bd_field_" ~ i, "Group by", fields, selected=(k.get("bd_field_" ~ i, "") if kept else b.get("field", ""))) }}
+    {{ ui.field("bd_depth_" ~ i, "Group by the first N parts", value=(k.get("bd_depth_" ~ i, "") if kept else b.get("depth", "")), type="number") }}
+    {{ ui.select("bd_kind_" ~ i, "Measure", measures, selected=(k.get("bd_kind_" ~ i, "rows") if kept else b.get("kind", "rows"))) }}
+    {{ ui.select("bd_mfield_" ~ i, "of column", fields, selected=(k.get("bd_mfield_" ~ i, "") if kept else b.get("mfield", ""))) }}
+    {{ ui.field("bd_limit_" ~ i, "Show the top", value=(k.get("bd_limit_" ~ i, "") if kept else b.get("limit", 10)), type="number") }}
+  </div>
+  {% endfor %}
+  {% endcall %}
+
+  {% if has_time %}
+  {% call ui.card("Trend over time") %}
+  {{ ui.checkbox("tr_on", "Show a trend chart", checked=(k.get("tr_on") if kept else trend.on)) }}
+  <div class="grid">
+    {{ ui.field("tr_label", "Title", value=(k.get("tr_label", "") if kept else trend.label)) }}
+    {{ ui.select("tr_interval", "By", intervals, selected=(k.get("tr_interval", "day") if kept else trend.interval)) }}
+    {{ ui.select("tr_kind", "Measure", measures, selected=(k.get("tr_kind", "rows") if kept else trend.kind)) }}
+    {{ ui.select("tr_field", "of column", fields, selected=(k.get("tr_field", "") if kept else trend.field)) }}
+    {{ ui.select("tr_split", "Split by (top 5)", fields, selected=(k.get("tr_split", "") if kept else trend.split)) }}
+    {{ ui.select("tr_chart", "Chart", charts, selected=(k.get("tr_chart", "bar") if kept else trend.chart)) }}
+  </div>
+  {% endcall %}
+  {% endif %}
+
+  {% call ui.card("Columns in the list and downloads") %}
+  <p class="muted">None ticked: all of them.</p>
+  <div class="grid">
+    {% for key, label, on in columns %}
+    <label class="check"><input type="checkbox" name="columns" value="{{ key }}"{% if (kept and key in k.getlist("columns")) or (not kept and on) %} checked{% endif %}> {{ label }}</label>
+    {% endfor %}
+  </div>
+  {% endcall %}
+
+  <div class="actions">
+    {{ ui.button("Publish", type="submit", variant="primary") }}
+    {{ ui.button("Cancel", href=("/reports/r/" ~ d.key) if d else "/reports/", variant="ghost") }}
+  </div>
+</form>
+{% endif %}
+{% endblock %}

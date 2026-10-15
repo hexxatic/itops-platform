@@ -1,10 +1,10 @@
 name = "assets"
-version = "0.4.0"
+version = "0.6.0"
 title = "Assets"
 description = "IT inventory: devices, SSL certificates, contacts, locations, domains and IP addresses, with admin-defined types."
 requires = ["core>=0.1"]
-optional = ["docs"]
-provides = ["lookup", "related", "link_targets", "upsert", "type_usage", "move_type"]
+optional = ["docs", "contracts"]
+provides = ["lookup", "related", "link_targets", "upsert", "type_usage", "move_type", "describe_area", "area_entities"]
 
 [permissions]
 "assets.read" = "View assets"
@@ -12,6 +12,11 @@ provides = ["lookup", "related", "link_targets", "upsert", "type_usage", "move_t
 "assets.publish" = { description = "Approve or reject AI-drafted asset changes, and delete assets", human_only = true }
 "assets.types.draft" = "Draft asset types and changes to them (admins; AI may draft)"
 "assets.types.approve" = { description = "Publish, retire and restore asset types (admins)", human_only = true }
+
+# Admins can restrict an asset type to AD groups or keep it out of AI connections
+# (ADR 0012). Kind "type" = record types: the core's type tools filter them too.
+[areas]
+type = "Asset type"
 
 [events]
 record_created = "An asset was created (payload: id, type, name)"

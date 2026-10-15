@@ -5,6 +5,7 @@
   {{ ui.button("All assets", href="/assets/") }}
   {% if can_write %}{{ ui.button("New " ~ type_noun, href="/assets/t/" ~ type_key ~ "/new", variant="primary") }}{% endif %}
 {% endcall %}
+{% if access.restricted or access.no_ai %}{% call ui.card() %}{{ ui.access_summary(access) }}{% endcall %}{% endif %}
 {{ ui.search_box(action="/assets/t/" ~ type_key, value=query, placeholder="Search " ~ type_noun ~ " records") }}
 {% call ui.card() %}
   <div id="search-results">

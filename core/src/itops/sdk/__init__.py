@@ -20,6 +20,7 @@ has loaded the module.
 
 from __future__ import annotations
 
+import contextvars
 import inspect
 from collections.abc import AsyncGenerator, Awaitable, Callable, Iterable
 from contextlib import asynccontextmanager
@@ -30,6 +31,7 @@ from urllib.parse import quote, urlencode
 from fastapi import APIRouter, HTTPException, Request, UploadFile
 from fastapi.responses import RedirectResponse
 from sqlalchemy import MetaData
+from sqlalchemy import event as sa_event
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import DeclarativeBase
 
@@ -37,7 +39,7 @@ from itops.core import auth
 from itops.core.actions import ActionContext, ActionError, ActionFn
 from itops.core.ai import LLM, AIService, AIUnavailable
 from itops.core.audit import Entry as AuditEntry
-from itops.core.bus import Event
+from itops.core.bus import Event, EventBus
 from itops.core.connectors import (
     ConnectorContext,
     ConnectorError,
@@ -48,11 +50,12 @@ from itops.core.connectors import (
 )
 from itops.core.connectors import fingerprint as _fingerprint
 from itops.core.content import Passage
-from itops.core.files import FileRejected, StoredFile
+from itops.core.files import FileRejected, StoredFile, may_read
 from itops.core.forms import KeptForm
 from itops.core.manifest import Manifest
 from itops.core.runtime import Runtime
 from itops.core.search import Hit
+from itops.core.suggest import SuggestField, Suggestion, SuggestionRun
 from itops.core.types import TypeDef, TypeProblem, TypeView, validate_values
 
 __all__ = [
@@ -75,6 +78,9 @@ __all__ = [
     "SourceLink",
     "SourceRef",
     "StoredFile",
+    "SuggestField",
+    "Suggestion",
+    "SuggestionRun",
     "TypeProblem",
     "TypeView",
 ]
@@ -84,6 +90,35 @@ PermissionDenied = auth.PermissionDenied
 
 AsyncFn = Callable[..., Awaitable[Any]]
 PageHandler = Callable[[Request], Awaitable[dict[str, Any]]]
+
+
+# The session ``module.session()`` has open in this task: events published while it's open
+# wait for its commit (and are dropped on rollback), so listeners never hear about a change
+# that wasn't saved.
+_open_session: contextvars.ContextVar[AsyncSession | None] = contextvars.ContextVar(
+    "itops_open_session", default=None
+)
+_PENDING = "itops_pending_events"
+
+
+def _hold_events(s: AsyncSession, bus: EventBus) -> None:
+    """Send the session's queued events when it commits; drop them when it rolls back."""
+    sync = s.sync_session
+    if sync.info.get(_PENDING) is not None:
+        return
+    sync.info[_PENDING] = []
+
+    def committed(_session: Any) -> None:
+        pending: list[Event] = sync.info[_PENDING]
+        sync.info[_PENDING] = []
+        for ev in pending:
+            bus.publish(ev)
+
+    def rolled_back(_session: Any) -> None:
+        sync.info[_PENDING] = []
+
+    sa_event.listen(sync, "after_commit", committed)
+    sa_event.listen(sync, "after_rollback", rolled_back)
 
 
 class ModuleNotLoaded(RuntimeError):
@@ -113,6 +148,15 @@ class PageSpec:
 class ConnectorSpec:
     name: str  # short name; runs as "<module>.<name>"
     fn: ConnectorFn
+
+
+JobFn = Callable[[], Awaitable[str | None]]
+
+
+@dataclass(frozen=True)
+class JobSpec:
+    name: str  # short name; runs as "<module>.<name>"
+    fn: JobFn
 
 
 @dataclass(frozen=True)
@@ -181,6 +225,48 @@ class AI:
         """
         return self._svc.llm(f"{self._module.name}.{feature}")
 
+    def can_suggest(self, feature: str) -> bool:
+        """Whether suggestions from files are on for ``feature`` (show the button only then)."""
+        return self.llm(feature) is not None
+
+    async def suggest(
+        self,
+        feature: str,
+        file_id: str,
+        fields: list[SuggestField],
+        *,
+        entity: tuple[str, str],
+        instructions: str = "",
+    ) -> int:
+        """Have the embedded LLM read one of this module's files and suggest ``fields``
+        (ADR 0015). Runs in the background, one at a time; returns the run id. Every
+        suggestion it keeps is backed by a quote found in the file. Raises
+        :class:`AIUnavailable` when ``feature`` isn't enabled. Check that the file belongs to
+        ``entity`` and that the person may change it before calling."""
+        return await self._module.runtime.suggestions.start(
+            module=self._module.name, feature=feature, file_id=file_id,
+            entity_type=entity[0], entity_id=entity[1], fields=fields,
+            instructions=instructions,
+        )  # fmt: skip
+
+    async def suggestion_run(self, run_id: int) -> SuggestionRun | None:
+        """One of this module's runs (status, suggestions with quote and page), or None."""
+        run = await self._module.runtime.suggestions.get(run_id)
+        return run if run is not None and run.module == self._module.name else None
+
+    async def suggestion_runs(self, entity_type: str, entity_id: str) -> list[SuggestionRun]:
+        """An entity's runs, newest first."""
+        return await self._module.runtime.suggestions.for_entity(
+            self._module.name, entity_type, entity_id
+        )
+
+    async def suggestions_reviewed(self, run_id: int, accepted: dict[str, Any]) -> None:
+        """Record what a person accepted ({key: value saved}); audit it in your module too."""
+        who = auth.current()
+        await self._module.runtime.suggestions.reviewed(
+            run_id, accepted=accepted, by=who.user if who else "system"
+        )
+
 
 class Files:
     """The core file store, scoped to this module (screenshots, attachments).
@@ -234,6 +320,65 @@ class Files:
             session, module=self._module.name, ids=ids, entity_type=entity_type,
             entity_id=entity_id,
         )  # fmt: skip
+
+    async def copy(self, file_id: str, *, read_permission: str | None = None) -> StoredFile:
+        """Copy a file another module owns into this one (unclaimed: claim it like an upload),
+        e.g. a document's attachment moving to a contract. Only if the current principal may
+        read it, exactly as a download is checked; else :class:`FileRejected`."""
+        rt = self._module.runtime
+        principal = auth.current()
+        async with self._module.session() as s:
+            row = await rt.files.get(s, file_id)
+            visible = rt.registry.get(f"{row.module}.visible_entity") if row else None
+            if row is None or not await may_read(row, principal, visible):
+                raise FileRejected(f"No file {file_id!r} you can read.")
+            stored = await rt.files.copy(
+                s, row, module=self._module.name,
+                read_permission=self._read_permission(read_permission),
+                created_by=principal.user if principal else "system",
+            )  # fmt: skip
+            await s.commit()
+        return stored
+
+    async def info(self, file_id: str) -> StoredFile | None:
+        """One of this module's files (name, type, size, url), or None: e.g. to list an
+        upload on its entity once it's saved."""
+        rt = self._module.runtime
+        async with self._module.session() as s:
+            row = await rt.files.get(s, file_id)
+        if row is None or row.module != self._module.name:
+            return None
+        try:
+            size = rt.files.resolve(row.storage_path).stat().st_size
+        except OSError:
+            size = 0
+        return StoredFile(id=row.id, url=f"/files/{row.id}", filename=row.filename,
+                          mime_type=row.mime_type, size_bytes=size)  # fmt: skip
+
+    async def text(self, file_id: str, *, session: AsyncSession | None = None) -> list[str]:
+        """A file's text, one entry per page (sheet for Excel), for search and AI: PDF, Word,
+        Excel, Outlook .msg, text and CSV. ``[]`` for anything without text (scans, images).
+        Read once per file content and cached. This module's own files, or ones the current
+        principal may read. Inside a transaction that touched the file (e.g. claimed it),
+        pass that ``session``: a second connection would wait on its locks. The caller then
+        commits."""
+        if session is not None:
+            return await self._text(session, file_id)
+        async with self._module.session() as s:
+            pages = await self._text(s, file_id)
+            await s.commit()
+        return pages
+
+    async def _text(self, session: AsyncSession, file_id: str) -> list[str]:
+        rt = self._module.runtime
+        row = await rt.files.get(session, file_id)
+        if row is None:
+            return []
+        if row.module != self._module.name:
+            visible = rt.registry.get(f"{row.module}.visible_entity")
+            if not await may_read(row, auth.current(), visible):
+                return []
+        return await rt.files.text(session, row)
 
     def max_bytes(self, *, attachment: bool = False) -> int:
         store = self._module.runtime.files
@@ -289,6 +434,9 @@ class Search:
     def __init__(self, module: Module) -> None:
         self._module = module
         self.reindexers: list[Reindexer] = []
+        # Raise it when what this module indexes changes: IT-Ops then runs its reindexers
+        # once, in the background, the next time it starts.
+        self.version = 1
 
     def _perm(self, permission: str | None) -> str:
         perm = permission or f"{self._module.name}.read"
@@ -307,9 +455,12 @@ class Search:
         passages: Iterable[Passage],
         read_permission: str | None = None,
         archived: bool = False,
+        area: tuple[str, str] | None = None,
     ) -> int:
         """Replace what's indexed for one entity. ``path`` is inside this module
-        (``/d/<slug>`` becomes ``/docs/d/<slug>``). Readers need ``read_permission``."""
+        (``/d/<slug>`` becomes ``/docs/d/<slug>``). Readers need ``read_permission``.
+        ``area``: (kind, key) of the area it's in (ADR 0012), so searches leave it out for
+        people who can't see that area. Re-index when it moves to another area."""
         return await self._module.runtime.search.replace(
             session,
             module=self._module.name,
@@ -320,6 +471,7 @@ class Search:
             read_permission=self._perm(read_permission),
             passages=passages,
             archived=archived,
+            area=self._module.areas.id(*area) if area else None,
         )
 
     async def remove(self, session: AsyncSession, *, kind: str, entity_id: str) -> None:
@@ -353,7 +505,8 @@ class Search:
 
     def reindexer(self, fn: Reindexer) -> Reindexer:
         """Register ``async def fn() -> int`` that re-indexes all of this module's
-        published content (used by ``itops search rebuild``)."""
+        published content (used by ``itops search rebuild``, and at startup after
+        ``module.search.version`` went up)."""
         self.reindexers.append(fn)
         return fn
 
@@ -460,8 +613,12 @@ class Links:
     ``link_targets`` for the type editor. Links reach this module and the modules it
     declares in requires/optional; a target module that isn't loaded just has no picker::
 
-        link_options = await module.links.options(definition)   # for ui.field_inputs
-        links = await module.links.resolve(values)               # for ui.field_values
+        link_options = await module.links.options(definition, keep=values)  # ui.field_inputs
+        links = await module.links.resolve(values)                          # ui.field_values
+
+    Lookups run as the viewer: something in an area they can't see (ADR 0012) is left out
+    of pickers and searches, and ``lookup(ids=...)`` returns it as ``{id, kind,
+    restricted: "1"}`` (no name, no url), which ``resolve`` shows as *Restricted*.
     """
 
     def __init__(self, module: Module) -> None:
@@ -474,12 +631,19 @@ class Links:
         return self._module.runtime.registry.get(f"{target_module}.lookup")
 
     async def options(
-        self, definition: TypeDef | None, *, limit: int = 500
+        self,
+        definition: TypeDef | None,
+        *,
+        limit: int = 500,
+        keep: dict[str, Any] | None = None,
     ) -> dict[str, list[tuple[str, str]]]:
-        """{target: [("module:kind:id", name)]} for each link field's target."""
+        """{target: [("module:kind:id", name)]} for each link field's target. ``keep``: the
+        values being edited; links they hold that the picker wouldn't offer (restricted,
+        archived) are added, so saving the form doesn't drop them."""
         out: dict[str, list[tuple[str, str]]] = {}
-        for f in definition.fields if definition else []:
-            target = f.target if f.kind == "link" else None
+        fields = [f for f in definition.fields if f.kind == "link"] if definition else []
+        for f in fields:
+            target = f.target
             if not target or target in out:
                 continue
             target_module, _, kind = target.partition(".")
@@ -488,6 +652,17 @@ class Links:
                 continue
             found: list[dict[str, str]] = await fn(kind=kind or None, limit=limit)
             out[target] = [(f"{target_module}:{r['kind']}:{r['id']}", r["name"]) for r in found]
+        if keep:
+            labels = await self.resolve(keep)
+            for f in fields:
+                offered = out.get(f.target or "")
+                if offered is None:
+                    continue
+                have = {value for value, _ in offered}
+                for item in _link_items(keep.get(f.key)):
+                    if item not in have:
+                        offered.append((item, labels.get(item, {}).get("text", item)))
+                        have.add(item)
         return out
 
     async def resolve(self, *value_sets: dict[str, Any]) -> dict[str, dict[str, str]]:
@@ -507,10 +682,11 @@ class Links:
                 continue
             found: list[dict[str, str]] = await fn(ids=list(dict.fromkeys(ids)))
             for r in found:
-                out[f"{target_module}:{r['kind']}:{r['id']}"] = {
-                    "text": r["name"],
-                    "href": r["url"],
-                }
+                out[f"{target_module}:{r['kind']}:{r['id']}"] = (
+                    {"text": "Restricted", "href": ""}
+                    if r.get("restricted")
+                    else {"text": r["name"], "href": r["url"]}
+                )
         return out
 
     async def related(self, link: str) -> list[dict[str, str]]:
@@ -523,6 +699,90 @@ class Links:
             if fn is not None:
                 out += [{**r, "module": target_module} for r in await fn(link=link)]
         return out
+
+
+def _link_items(raw: Any) -> list[str]:
+    """A link field's stored value(s) as "module:kind:id" strings."""
+    items: list[Any] = raw if isinstance(raw, list) else [raw]  # pyright: ignore[reportUnknownVariableType]
+    out: list[str] = []
+    for item in items:
+        if isinstance(item, dict):
+            d: dict[str, Any] = item  # pyright: ignore[reportUnknownVariableType]
+            if d.get("module") and d.get("id"):
+                out.append(f"{d['module']}:{d.get('kind', '')}:{d['id']}")
+        elif isinstance(item, str) and item.count(":") >= 2:
+            out.append(item)
+    return out
+
+
+class Areas:
+    """Visibility of this module's areas by AD group (ADR 0012), declared in the manifest
+    (``[areas] collection = "Collection"``). An admin restricts an area to AD groups and/or
+    keeps it out of AI connections, on the access page core serves. The module keeps
+    everything in an area the viewer can't see out of every list, count, lookup, picker and
+    MCP tool, and answers 404 for its pages::
+
+        hidden = await module.areas.hidden("collection")      # keys to leave out
+        if not await module.areas.visible("collection", str(col.id)): ...
+        await module.search.index(..., area=("collection", str(col.id)))
+
+    Provide ``describe_area(kind, key) -> {name, url} | None`` (in ``provides``); the access
+    page shows that name and links back to that url. Search filters by area on its own.
+    """
+
+    def __init__(self, module: Module) -> None:
+        self._module = module
+
+    def _kind(self, kind: str) -> str:
+        if kind not in self._module.manifest.areas:
+            raise ValueError(
+                f"{self._module.name}: area kind {kind!r} is not declared in manifest.toml [areas]"
+            )
+        return kind
+
+    def id(self, kind: str, key: str) -> str:
+        """The area's id, '<module>:<kind>:<key>'."""
+        return f"{self._module.name}:{self._kind(kind)}:{key}"
+
+    async def hidden(self, kind: str) -> frozenset[str]:
+        """Keys of the ``kind`` areas the current principal can't see (usually none)."""
+        return await self._module.runtime.areas.hidden(
+            auth.current(), self._module.name, self._kind(kind)
+        )
+
+    async def visible(self, kind: str, key: str) -> bool:
+        return str(key) not in await self.hidden(kind)
+
+    async def access(self, kind: str, key: str) -> dict[str, Any]:
+        """What a page shows about an area (``ui.access_summary`` / ``ui.access_badges``):
+        whether it's restricted, to which groups, whether it's kept out of AI, and the
+        access page's url when the viewer may change it."""
+        return await self._module.runtime.areas.access(
+            auth.current(), self._module.name, self._kind(kind), str(key)
+        )
+
+
+class People:
+    """People who use IT-Ops (ADR 0014), for a record that points at a person (an owner,
+    an assignee). Store the person's UPN; show their current name::
+
+        choices = await module.people.options(holding="contracts.read")  # [(upn, name)]
+        names = await module.people.names([c.owner for c in contracts])  # {upn: name}
+
+    Only people who have signed in to IT-Ops are listed (that's when IT-Ops learns them).
+    """
+
+    def __init__(self, module: Module) -> None:
+        self._module = module
+
+    async def options(self, *, holding: str | None = None) -> list[tuple[str, str]]:
+        """(upn, name) for a picker, by name; ``holding``: only people with that permission."""
+        people = await self._module.runtime.people.list(holding=holding)
+        return [(p.upn, p.name) for p in people]
+
+    async def names(self, upns: Iterable[str]) -> dict[str, str]:
+        """UPN -> display name, for the ones IT-Ops knows."""
+        return await self._module.runtime.people.names(upns)
 
 
 class Refs:
@@ -690,6 +950,7 @@ class Module:
         self.pages: list[PageSpec] = []
         self.subscriptions: list[Subscription] = []
         self.connectors: list[ConnectorSpec] = []
+        self.jobs: list[JobSpec] = []
         self.actions: list[ActionSpec] = []
         self.service_fns: dict[str, Callable[..., Any]] = {}
         self._runtime: Runtime | None = None
@@ -702,6 +963,8 @@ class Module:
         self.forms = Forms(self)
         self.links = Links(self)
         self.refs = Refs(self)
+        self.areas = Areas(self)
+        self.people = People(self)
 
         schema = self.name
 
@@ -781,6 +1044,20 @@ class Module:
 
         return decorator
 
+    def job(self, name: str) -> Callable[[JobFn], JobFn]:
+        """Register a scheduled job (ADR 0014), declared in the manifest as ``[jobs.<name>]``:
+        ``async def run() -> str | None`` (a short summary). The core runs it on its
+        schedule as itself, with the job's declared permissions; it works only on this
+        module's data (publish events for anything beyond)."""
+
+        def decorator(fn: JobFn) -> JobFn:
+            if not inspect.iscoroutinefunction(fn):
+                raise TypeError(f"{self.name}: job {name!r} must be async")
+            self.jobs.append(JobSpec(name, fn))
+            return fn
+
+        return decorator
+
     def connector(self, name: str) -> Callable[[ConnectorFn], ConnectorFn]:
         """Register a connector (ADR 0010), declared in the manifest as ``[connectors.<name>]``.
         ``async def run(ctx: ConnectorContext) -> None`` reads the source and writes through
@@ -844,18 +1121,27 @@ class Module:
                 f"{self.name}: event {event!r} is not declared in manifest.toml [events]"
             )
         ev = Event(name=f"{self.name}.{event}", payload=payload, source=self.name)
-        self.runtime.bus.publish(ev)
+        s = _open_session.get()
+        if s is None:  # not inside module.session(): nothing to wait for
+            self.runtime.bus.publish(ev)
+        else:  # sent when that session commits, dropped if it rolls back
+            s.sync_session.info[_PENDING].append(ev)
         return ev
 
     @asynccontextmanager
     async def session(self) -> AsyncGenerator[AsyncSession]:
-        """A database session. Commit explicitly; rolls back on error."""
+        """A database session. Commit explicitly; rolls back on error. Events published
+        while it's open are sent when it commits (dropped if it rolls back)."""
         maker = self.runtime.sessionmaker
         if maker is None:
             raise ModuleNotLoaded("database is not configured")
         async with maker() as s:
+            _hold_events(s, self.runtime.bus)
+            token = _open_session.set(s)
             try:
                 yield s
             except BaseException:
                 await s.rollback()
                 raise
+            finally:
+                _open_session.reset(token)

@@ -14,6 +14,11 @@ its owner *via AI* (so human-only permissions like ``docs.publish`` never apply)
 the owner's roles as AD last reported them (re-checked hourly while tokens are in use).
 Only a SHA-256 hash is stored; the token itself is shown once. Tokens expire (max 90
 days) and can be revoked.
+
+**Groups** (ADR 0012): a person's AD groups decide which restricted areas they see. They're
+kept on the user row: every group from sign-in (the id token's group claim), and for token
+owners the groups that matter (role groups and the ones restrictions name), refreshed by
+the hourly AD check.
 """
 
 from __future__ import annotations
@@ -23,8 +28,8 @@ import datetime as dt
 import hashlib
 import secrets
 import time
-from collections.abc import Iterable
-from dataclasses import dataclass
+from collections.abc import Awaitable, Callable, Iterable
+from dataclasses import dataclass, replace
 from typing import Any, Literal
 
 from mcp.server.auth.provider import AccessToken
@@ -53,6 +58,15 @@ def roles_from_groups(groups: Iterable[str], role_groups: dict[str, str]) -> lis
     return [r for r in ROLES if role_groups.get(r, "").lower() in have]
 
 
+def group_names(groups: Iterable[str]) -> tuple[str, ...]:
+    """Group names as stored and compared: ``DOMAIN\\`` prefix dropped, lower case."""
+    return tuple(sorted({g.split("\\")[-1].strip().lower() for g in groups if g.strip()}))
+
+
+def _groups(raw: str | None) -> tuple[str, ...]:
+    return tuple(g for g in (raw or "").split(",") if g)
+
+
 def top_role(roles: Iterable[str]) -> Role | None:
     held = set(roles)
     for r in reversed(ROLES):
@@ -61,15 +75,29 @@ def top_role(roles: Iterable[str]) -> Role | None:
     return None
 
 
-def permissions_for(roles: Iterable[str], declared: Iterable[str]) -> frozenset[str]:
-    """Expand roles into concrete permissions from every loaded module's manifest."""
+def permissions_for(
+    roles: Iterable[str],
+    declared: Iterable[str],
+    *,
+    groups: Iterable[str] = (),
+    group_grants: dict[str, frozenset[str]] | None = None,
+) -> frozenset[str]:
+    """Expand roles into concrete permissions from every loaded module's manifest.
+
+    ``group_grants``: the group-granted permissions (manifest ``grant = "group"``) ->
+    lower-case group names that hold them. Roles never grant those; holding one of the
+    groups does, for anyone with a role. Admins hold everything."""
     top = top_role(roles)
     if top is None:
         return frozenset()
     if top == "admin":
         return frozenset({ALL})
+    grants = group_grants or {}
     verbs = ROLE_VERBS[top]
-    return frozenset(p for p in declared if p.rsplit(".", 1)[-1] in verbs)
+    by_role = {p for p in declared if p not in grants and p.rsplit(".", 1)[-1] in verbs}
+    have = set(group_names(groups))
+    by_group = {p for p, holders in grants.items() if p in declared and holders & have}
+    return frozenset(by_role | by_group)
 
 
 def _hash(token: str) -> str:
@@ -80,6 +108,7 @@ hash_token = _hash  # stored form of a token or one-time code (personal and OAut
 OAUTH_ACCESS_PREFIX = "itops_oat_"  # OAuth access tokens (ADR 0013; oauth.py issues them)
 DIRECTORY_CHECK_MINUTES = 60  # how stale a token owner's AD check may be (directory.py)
 DIRECTORY_RETRY_MINUTES = 5  # after AD couldn't be reached, wait this long before asking again
+GROUPS_CACHE_SECONDS = 60.0  # how long a web request trusts a user's stored groups
 
 
 def _now() -> dt.datetime:
@@ -92,6 +121,7 @@ class User:
     upn: str
     display_name: str
     roles: tuple[str, ...]
+    groups: tuple[str, ...] = ()  # lower case (group_names)
 
 
 @dataclass(frozen=True)
@@ -111,23 +141,79 @@ class Identity:
         self._sessionmaker = sessionmaker
         self._audit = audit or AuditLog()
         self._declared: frozenset[str] = frozenset()
+        # Group-granted permission -> lower-case groups holding it (ADR 0014).
+        self._group_grants: dict[str, frozenset[str]] = {}
+        self.permission_groups: dict[str, list[str]] = {}  # as configured (ITOPS_PERMISSION_GROUPS)
         # Token owners re-checked against AD (directory.py); None: not checked (dev, tests).
         self.directory: DirectoryCheck | None = None
         self.role_groups: dict[str, str] = {}
         self._directory_checks: dict[str, asyncio.Future[User | None]] = {}
         self._directory_failed: dict[str, float] = {}  # user id -> when AD last failed
+        # The groups restrictions name (core/areas.py), asked about in the AD check too.
+        self.watched_groups: Callable[[], Awaitable[list[str]]] | None = None
+        self._groups: dict[str, tuple[float, tuple[str, ...]]] = {}  # user id -> (when, groups)
 
-    def set_declared_permissions(self, permissions: Iterable[str]) -> None:
+    def set_declared_permissions(
+        self, permissions: Iterable[str], group_granted: Iterable[str] = ()
+    ) -> list[str]:
+        """The loaded modules' permissions, and which of them groups grant. Returns
+        problems worth logging (a group-granted permission no group holds, or a mapping
+        for a permission no module declares)."""
         self._declared = frozenset(permissions)
+        granted = frozenset(group_granted)
+        configured = {p: frozenset(group_names(g)) for p, g in self.permission_groups.items()}
+        self._group_grants = {p: configured.get(p, frozenset()) for p in granted}
+        problems = [
+            f"{p} is granted by group, but no group is configured for it (admins only)"
+            for p in sorted(granted - configured.keys())
+        ]
+        problems += [
+            f"ITOPS_PERMISSION_GROUPS names {p}, which no loaded module grants by group"
+            for p in sorted(configured.keys() - granted)
+        ]
+        return problems
+
+    def permissions_of(self, roles: Iterable[str], groups: Iterable[str]) -> frozenset[str]:
+        """What these roles and groups grant across the loaded modules."""
+        return permissions_for(
+            roles, self._declared, groups=groups, group_grants=self._group_grants
+        )
 
     def principal(self, user: User, *, via_ai: bool = False, client: str = "web") -> Principal:
         return Principal(
             user=user.upn,
             display_name=user.display_name,
-            permissions=permissions_for(user.roles, self._declared),
+            permissions=self.permissions_of(user.roles, user.groups),
             via_ai=via_ai,
             client=client,
+            groups=frozenset(user.groups),
         )
+
+    async def with_groups(self, user: User) -> User:
+        """``user`` (from the session cookie, which holds no groups) with their stored
+        groups, cached for a minute."""
+        cached = self._groups.get(user.id)
+        if cached is None or time.monotonic() - cached[0] > GROUPS_CACHE_SECONDS:
+            async with self._sessionmaker() as s:
+                raw = (
+                    await s.execute(
+                        text("SELECT group_names FROM itops.users WHERE id = :u"), {"u": user.id}
+                    )
+                ).scalar()
+            cached = (time.monotonic(), _groups(raw))
+            self._groups[user.id] = cached
+        return replace(user, groups=cached[1])
+
+    def forget_groups(self) -> None:
+        self._groups.clear()
+
+    async def directory_groups(self) -> list[str]:
+        """The groups to ask AD about: the role groups, the permission groups and every
+        restricted area's."""
+        extra = await self.watched_groups() if self.watched_groups else []
+        granting = [g for groups in self.permission_groups.values() for g in groups]
+        names = {g.lower(): g for g in [*self.role_groups.values(), *granting, *extra]}
+        return list(names.values())
 
     async def record_sign_in(self, user: User) -> str:
         """Create or refresh the user row (roles as of this sign-in). Returns their saved
@@ -137,9 +223,9 @@ class Identity:
                 text(
                     "MERGE itops.users AS t USING (SELECT :id AS id) AS src ON t.id = src.id"
                     " WHEN MATCHED THEN UPDATE SET upn = :upn, display_name = :name,"
-                    "   roles = :roles, last_sign_in = sysutcdatetime()"
-                    " WHEN NOT MATCHED THEN INSERT (id, upn, display_name, roles, last_sign_in)"
-                    "   VALUES (:id, :upn, :name, :roles, sysutcdatetime())"
+                    "   roles = :roles, group_names = :groups, last_sign_in = sysutcdatetime()"
+                    " WHEN NOT MATCHED THEN INSERT (id, upn, display_name, roles, group_names,"
+                    "   last_sign_in) VALUES (:id, :upn, :name, :roles, :groups, sysutcdatetime())"
                     " OUTPUT inserted.appearance;"
                 ),
                 {
@@ -147,8 +233,10 @@ class Identity:
                     "upn": user.upn,
                     "name": user.display_name,
                     "roles": ",".join(user.roles),
+                    "groups": ",".join(user.groups),
                 },
             )
+            self._groups[user.id] = (time.monotonic(), user.groups)
             await self._record(
                 s, user, "user.signed_in", f"Signed in as {top_role(user.roles)}",
                 roles=list(user.roles),
@@ -301,8 +389,9 @@ class Identity:
             row = (
                 await s.execute(
                     text(
-                        "SELECT t.id, u.id, u.upn, u.display_name, u.roles, u.directory_checked_at"
-                        " FROM itops.api_tokens t JOIN itops.users u ON u.id = t.user_id"
+                        "SELECT t.id, u.id, u.upn, u.display_name, u.roles, u.directory_checked_at,"
+                        " u.group_names FROM itops.api_tokens t"
+                        " JOIN itops.users u ON u.id = t.user_id"
                         " WHERE t.token_hash = :h AND t.revoked_at IS NULL"
                         " AND t.expires_at > sysutcdatetime()"
                     ),
@@ -321,7 +410,8 @@ class Identity:
             )
             await s.commit()
         roles = tuple(r for r in (row[4] or "").split(",") if r)
-        user = User(id=row[1], upn=row[2], display_name=row[3], roles=roles)
+        user = User(id=row[1], upn=row[2], display_name=row[3], roles=roles,
+                    groups=_groups(row[6]))  # fmt: skip
         return await self._still_allowed(user, row[5])
 
     async def _user_for_oauth_token(self, token: str) -> User | None:
@@ -329,8 +419,9 @@ class Identity:
             row = (
                 await s.execute(
                     text(
-                        "SELECT t.id, u.id, u.upn, u.display_name, u.roles, u.directory_checked_at"
-                        " FROM itops.oauth_tokens t JOIN itops.users u ON u.id = t.user_id"
+                        "SELECT t.id, u.id, u.upn, u.display_name, u.roles, u.directory_checked_at,"
+                        " u.group_names FROM itops.oauth_tokens t"
+                        " JOIN itops.users u ON u.id = t.user_id"
                         " WHERE t.token_hash = :h AND t.kind = 'access' AND t.revoked_at IS NULL"
                         " AND t.expires_at > :n"
                     ),
@@ -349,7 +440,8 @@ class Identity:
             )
             await s.commit()
         roles = tuple(r for r in (row[4] or "").split(",") if r)
-        user = User(id=row[1], upn=row[2], display_name=row[3], roles=roles)
+        user = User(id=row[1], upn=row[2], display_name=row[3], roles=roles,
+                    groups=_groups(row[6]))  # fmt: skip
         return await self._still_allowed(user, row[5])
 
     async def still_allowed(self, user_id: str) -> bool:
@@ -357,14 +449,18 @@ class Identity:
         async with self._sessionmaker() as s:
             row = (
                 await s.execute(
-                    text("SELECT id, upn, display_name, roles FROM itops.users WHERE id = :u"),
+                    text(
+                        "SELECT id, upn, display_name, roles, group_names FROM itops.users"
+                        " WHERE id = :u"
+                    ),
                     {"u": user_id},
                 )
             ).first()
         if row is None:
             return False
         roles = tuple(r for r in (row[3] or "").split(",") if r)
-        user = User(id=row[0], upn=row[1], display_name=row[2], roles=roles)
+        user = User(id=row[0], upn=row[1], display_name=row[2], roles=roles,
+                    groups=_groups(row[4]))  # fmt: skip
         return await self._still_allowed(user, None, force=True) is not None
 
     async def _still_allowed(
@@ -394,17 +490,21 @@ class Identity:
 
     async def _refresh_from_directory(self, user: User) -> User | None:
         assert self.directory is not None
-        answer = await self.directory(user.upn, list(self.role_groups.values()))
+        answer = await self.directory(user.upn, await self.directory_groups())
         if answer.status == "error":
             self._directory_failed[user.id] = time.monotonic()
             return user if user.roles else None
         self._directory_failed.pop(user.id, None)
         roles = tuple(roles_from_groups(answer.groups, self.role_groups))
+        groups = group_names(answer.groups)
         now = _now()
         async with self._sessionmaker() as s:
             await s.execute(
-                text("UPDATE itops.users SET roles = :r, directory_checked_at = :n WHERE id = :u"),
-                {"r": ",".join(roles), "n": now, "u": user.id},
+                text(
+                    "UPDATE itops.users SET roles = :r, group_names = :g, directory_checked_at = :n"
+                    " WHERE id = :u"
+                ),
+                {"r": ",".join(roles), "g": ",".join(groups), "n": now, "u": user.id},
             )
             if not roles:
                 await s.execute(
@@ -434,9 +534,11 @@ class Identity:
                     roles=list(roles), before=list(user.roles),
                 )  # fmt: skip
             await s.commit()
+        self._groups.pop(user.id, None)
         if not roles:
             return None
-        return User(id=user.id, upn=user.upn, display_name=user.display_name, roles=roles)
+        return User(id=user.id, upn=user.upn, display_name=user.display_name, roles=roles,
+                    groups=groups)  # fmt: skip
 
     async def token_known(self, token: str) -> bool:
         """Was this ever a real token (even if expired or revoked)? The rate limiter holds
@@ -473,7 +575,7 @@ class PatVerifier:
             client_id="itops-pat",
             scopes=list(user.roles),
             subject=user.id,
-            claims={"upn": user.upn, "name": user.display_name},
+            claims={"upn": user.upn, "name": user.display_name, "groups": list(user.groups)},
         )
 
 
@@ -485,5 +587,6 @@ def principal_from_access_token(token: Any, identity: Identity) -> Principal:
         upn=str(claims.get("upn", "")),
         display_name=str(claims.get("name", "")),
         roles=tuple(getattr(token, "scopes", ()) or ()),
+        groups=tuple(str(g) for g in claims.get("groups") or ()),
     )
     return identity.principal(user, via_ai=True, client="mcp")

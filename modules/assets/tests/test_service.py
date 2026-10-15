@@ -5,6 +5,7 @@ from __future__ import annotations
 from collections.abc import AsyncGenerator
 from contextlib import asynccontextmanager
 from pathlib import Path
+from typing import Any
 
 import pytest
 from itops_assets import module, service
@@ -167,3 +168,28 @@ async def test_ai_cannot_write_assets_directly(database_url: str, tmp_path: Path
             await s.commit()
         with acting_as(AI), pytest.raises(AssetsError, match="proposes"):
             await service.update(s, AI, record, name="changed.example.com", fields={})
+
+
+async def test_events_wait_for_the_commit(database_url: str, tmp_path: Path) -> None:
+    """Listeners hear about a change once it's saved: never before the commit, never
+    after a rollback."""
+    async with running(database_url, tmp_path):
+        heard: list[str] = []
+
+        async def listener(e: Any) -> None:
+            heard.append(e.payload["name"])
+
+        module.runtime.bus.subscribe("assets.record_created", listener, subscriber="test")
+        with acting_as(PERSON):
+            async with module.session() as s:
+                await service.create(s, PERSON, type_key="domain", name="kept.example.com")
+                await module.runtime.bus.drain()
+                assert heard == []  # not saved yet
+                await s.commit()
+            await module.runtime.bus.drain()
+            assert heard == ["kept.example.com"]
+            async with module.session() as s:
+                await service.create(s, PERSON, type_key="domain", name="dropped.example.com")
+                await s.rollback()
+            await module.runtime.bus.drain()
+            assert heard == ["kept.example.com"]

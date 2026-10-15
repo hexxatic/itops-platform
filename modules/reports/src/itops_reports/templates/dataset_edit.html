@@ -1,0 +1,26 @@
+{% extends "core/shell.html" %}
+{% import "core/components.html" as ui %}
+{% block content %}
+{{ ui.breadcrumb([("Reports", "/reports/"), ("Datasets", "/reports/datasets"), ((ds.title, "/reports/d/" ~ ds.key) if ds else ("New dataset", None))] + ([("Settings", None)] if ds else [])) }}
+{{ ui.page_header(("Settings: " ~ ds.title) if ds else "New dataset") }}
+{% if error %}{{ ui.alert(error, "danger") }}{% endif %}
+{% call ui.card() %}
+<form method="post" action="{{ action }}" class="stack">
+  {{ ui.field("title", "Title", value=title, required=True) }}
+  {{ ui.field("description", "Description", value=description) }}
+  {% if types %}
+  {{ ui.select("type_key", "Columns (a column type)", types, selected=type_key, required=True) }}
+  {% else %}
+  {{ ui.alert("No column types are published yet.", "warning") }}
+  {% endif %}
+  {{ ui.select("mode", "Where rows come from", modes, selected=mode) }}
+  {{ ui.select("time_field", "Time column (for trends and retention)", time_fields, selected=time_field) }}
+  {{ ui.field("retention_days", "Keep rows for (days)", value=retention_days, type="number", help="Empty keeps everything. Rows older than this, by the time column, are deleted every night.") }}
+  <div class="actions">
+    {{ ui.button("Save", type="submit", variant="primary") }}
+    {{ ui.button("Cancel", href=("/reports/d/" ~ ds.key) if ds else "/reports/datasets", variant="ghost") }}
+  </div>
+</form>
+{% endcall %}
+<p class="muted">Columns come from a column type: <a href="/reports/types">manage column types</a>. The time column must belong to the chosen type.</p>
+{% endblock %}

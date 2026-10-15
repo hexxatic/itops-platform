@@ -34,6 +34,9 @@ def pytest_configure(config: pytest.Config) -> None:
         n for n in os.environ if n.startswith("ITOPS_") and not n.startswith("ITOPS_TEST_")
     ]:
         del os.environ[name]
+    # No background re-index in test apps (core/app.py _reindex_changed): it would still be
+    # querying when a test's app shuts down and closes the database under it.
+    os.environ["ITOPS_REINDEX_ON_START"] = "false"
 
 
 def _url(database: str) -> str:

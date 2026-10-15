@@ -1,0 +1,37 @@
+{% extends "core/shell.html" %}
+{% import "core/components.html" as ui %}
+{% block content %}
+{% call ui.page_header("Contracts", "IT contracts: what's coming up for renewal, what each term costs, and who decides.") %}
+  {% if can_costs %}{{ ui.button("Costs", href="/contracts/costs") }}{% endif %}
+  {% if can_write %}{{ ui.button("New contract", href="/contracts/new", variant="primary") }}{% endif %}
+{% endcall %}
+{% if error %}{{ ui.alert(error, "danger") }}{% endif %}
+
+{% call ui.card("Coming up for renewal") %}
+<p class="muted">Undecided contracts within 120 days of their cancel-by date (the term's end minus its notice period), soonest first.</p>
+{{ ui.table([("name", "Contract"), ("vendor", "Vendor"), ("owner", "Owner"), ("cancel_by", "Cancel by"),
+             ("left", ""), ("renews", "Then"), ("state", "State")], upcoming,
+            empty="Nothing due in the next 120 days.") }}
+{% endcall %}
+
+{% if drafts %}
+{% call ui.card("Drafted by AI, waiting for you") %}
+{{ ui.table([("name", "Contract"), ("vendor", "Vendor"), ("by", "Drafted by"), ("when", "When")], drafts) }}
+{% endcall %}
+{% endif %}
+
+{% call ui.card("All contracts" if not archived else "Archived contracts") %}
+{% call ui.disclosure("Filter", open=(query or category or owner or archived)) %}
+<form method="get" action="/contracts/" class="stack">
+  {{ ui.field("q", "Name or vendor", value=query) }}
+  {{ ui.select("category", "Category", categories, selected=category) }}
+  {{ ui.select("owner", "Owner", owners, selected=owner) }}
+  {{ ui.checkbox("archived", "Archived", checked=archived) }}
+  <div class="actions">{{ ui.button("Filter", type="submit") }}{{ ui.button("Clear", href="/contracts/", variant="ghost") }}</div>
+</form>
+{% endcall %}
+{{ ui.table([("name", "Contract"), ("vendor", "Vendor"), ("category", "Category"), ("owner", "Owner"),
+             ("ends", "Term ends"), ("cancel_by", "Cancel by"), ("state", "State")], rows,
+            empty="No contracts match." if (query or category or owner) else "No contracts yet.") }}
+{% endcall %}
+{% endblock %}

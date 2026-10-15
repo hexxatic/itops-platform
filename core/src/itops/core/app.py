@@ -6,6 +6,7 @@ Routes:
     /api/<module>/... module REST APIs
     /mcp/             one MCP endpoint for every module's tools (streamable HTTP)
     /files/<id>       stored files (screenshots etc.), permission-checked
+    /access/...       who sees an area: AD groups, kept out of AI (admins, ADR 0012)
     /search           platform-wide search (every module the user can read)
     /auth/...         Entra sign-in (entra mode)
     /account          who you are; personal access tokens for AI tools
@@ -46,6 +47,7 @@ from itops.core import auth, loader, migrations
 from itops.core.account import mount_account
 from itops.core.ai import AIService
 from itops.core.ai_connections_page import mount_ai_connections
+from itops.core.areas_page import mount_access
 from itops.core.audit_page import mount_audit
 from itops.core.bus import EventBus
 from itops.core.config import Settings, get_settings
@@ -53,8 +55,9 @@ from itops.core.connectors_page import mount_connectors
 from itops.core.content import Passage
 from itops.core.db import make_engine, make_sessionmaker
 from itops.core.directory import check_user as check_directory
+from itops.core.directory import group_exists
 from itops.core.entra import AuthGate
-from itops.core.files import FileStore, is_image
+from itops.core.files import FileStore, is_image, may_read
 from itops.core.identity import Identity, PatVerifier, principal_from_access_token
 from itops.core.mcp import build_server
 from itops.core.oauth import SCOPE as OAUTH_SCOPE
@@ -113,10 +116,20 @@ def create_app(
     runtime.connectors.sessionmaker = sessionmaker
     runtime.connectors.audit = runtime.audit
     runtime.actions.sessionmaker = sessionmaker
+    runtime.jobs.sessionmaker = sessionmaker
+    runtime.suggestions.sessionmaker = sessionmaker
+    runtime.suggestions.files = runtime.files
+    runtime.suggestions.ai = runtime.ai
     runtime.actions.audit = runtime.audit
+    runtime.areas.sessionmaker = sessionmaker
+    runtime.areas.audit = runtime.audit
+    runtime.areas.registry = runtime.registry
+    runtime.search.areas = runtime.areas
+    runtime.areas.on_change.append(runtime.search.forget_vocabulary)
 
     for mod in loaded:
         mod.bind(runtime)
+        runtime.areas.declare(mod.name, mod.manifest.areas)
         for short, fn in mod.service_fns.items():
             runtime.registry.register(f"{mod.name}.{short}", fn)
         for sub in mod.subscriptions:
@@ -125,6 +138,8 @@ def create_app(
             runtime.connectors.register(
                 mod.name, spec.name, mod.manifest.connectors[spec.name], spec.fn
             )
+        for job in mod.jobs:
+            runtime.jobs.register(mod.name, job.name, mod.manifest.jobs[job.name], job.fn)
         for action in mod.actions:
             runtime.actions.register(
                 mod.name, mod.manifest.title or mod.name, action.name,
@@ -133,9 +148,18 @@ def create_app(
 
     identity = Identity(sessionmaker, runtime.audit)
     identity.role_groups = dict(settings.role_groups)
+    identity.watched_groups = runtime.areas.watched_groups
+    runtime.people.sessionmaker = sessionmaker
+    runtime.people.permissions_of = identity.permissions_of
     if settings.auth_mode == "entra" and settings.directory_check and sys.platform == "win32":
         identity.directory = check_directory
-    identity.set_declared_permissions(p for mod in loaded for p in mod.manifest.permissions)
+        runtime.areas.group_exists = group_exists
+    identity.permission_groups = {p: list(g) for p, g in settings.permission_groups.items()}
+    for problem in identity.set_declared_permissions(
+        (p for mod in loaded for p in mod.manifest.permissions),
+        (p for mod in loaded for p in mod.manifest.group_granted_permissions),
+    ):
+        log.warning("permissions: %s", problem)
     entra = settings.auth_mode == "entra"
     mcp_public = settings.mcp_public_url.rstrip("/")
     oauth = (
@@ -197,18 +221,29 @@ def create_app(
             log.warning("marked %d interrupted connector run(s) as failed", interrupted)
         if interrupted := await runtime.actions.recover():
             log.warning("marked %d interrupted tool run(s) as failed", interrupted)
+        if interrupted := await runtime.jobs.recover():
+            log.warning("marked %d interrupted job run(s) as failed", interrupted)
+        if interrupted := await runtime.suggestions.recover():
+            log.warning("marked %d interrupted AI suggestion run(s) as failed", interrupted)
         await _index_tools(runtime)
+        reindexing = asyncio.create_task(_reindex_changed(runtime, loaded))
         scheduler = (
             asyncio.create_task(runtime.connectors.scheduler())
             if settings.run_connectors and runtime.connectors.all()
             else None
         )
+        jobs = (
+            asyncio.create_task(runtime.jobs.scheduler())
+            if settings.run_jobs and runtime.jobs.all()
+            else None
+        )
         async with mcp_server.session_manager.run():
             yield
-        if scheduler is not None:
-            scheduler.cancel()
-            with contextlib.suppress(asyncio.CancelledError):
-                await scheduler
+        for task in (scheduler, jobs, reindexing):
+            if task is not None:
+                task.cancel()
+                with contextlib.suppress(asyncio.CancelledError):
+                    await task
         await runtime.bus.drain()
         await engine.dispose()
 
@@ -234,7 +269,9 @@ def create_app(
 
     @app.get("/files/{file_id}", include_in_schema=False)
     async def download(file_id: str) -> Response:  # pyright: ignore[reportUnusedFunction]
-        """Serve a stored file after checking its owning module's read permission."""
+        """Serve a stored file after checking its owning module's read permission, and that
+        the viewer may see what it belongs to (a document in a restricted collection: the
+        module's ``visible_entity`` service, ADR 0012)."""
         maker = runtime.sessionmaker
         assert maker is not None
         async with maker() as session:
@@ -245,6 +282,9 @@ def create_app(
             auth.require(row.read_permission)
         except auth.PermissionDenied as exc:
             raise HTTPException(status_code=403, detail=str(exc)) from exc
+        visible = runtime.registry.get(f"{row.module}.visible_entity")
+        if not await may_read(row, auth.current(), visible):
+            raise HTTPException(status_code=404)
         return FileResponse(
             runtime.files.resolve(row.storage_path),
             media_type=row.mime_type,
@@ -344,6 +384,7 @@ def create_app(
     )
     app.state.limiter = limiter
     mount_ai_connections(app, templates, identity, oauth, limiter)
+    mount_access(app, templates, runtime)
     mount_audit(app, templates, runtime)
     mount_connectors(app, templates, runtime)
     mount_tools(app, templates, runtime)
@@ -381,6 +422,47 @@ class McpWithoutSlash:
         if scope["type"] == "http" and scope["path"] == "/mcp":
             scope = {**scope, "path": "/mcp/", "raw_path": b"/mcp/"}
         await self.app(scope, receive, send)
+
+
+async def _reindex_changed(runtime: Runtime, modules: list[Module]) -> None:
+    """Re-index each module whose ``module.search.version`` went up since its entries were
+    built (once, in the background, after startup). A module never recorded counts as
+    version 1."""
+    if not runtime.settings.reindex_on_start:
+        return
+    maker = runtime.sessionmaker
+    assert maker is not None
+    for mod in modules:
+        if not mod.search.reindexers:
+            continue
+        try:
+            async with maker() as s:
+                stored = (
+                    await s.execute(
+                        text("SELECT version FROM itops.search_versions WHERE module = :m"),
+                        {"m": mod.name},
+                    )
+                ).scalar()
+            if mod.search.version <= int(stored or 1):
+                continue
+            log.info("re-indexing %s for search version %d", mod.name, mod.search.version)
+            count = 0
+            for reindex in mod.search.reindexers:
+                count += await reindex()
+            async with maker() as s:
+                await s.execute(
+                    text(
+                        "MERGE itops.search_versions AS t USING (SELECT :m AS module) AS src"
+                        " ON t.module = src.module"
+                        " WHEN MATCHED THEN UPDATE SET version = :v, rebuilt_at = sysutcdatetime()"
+                        " WHEN NOT MATCHED THEN INSERT (module, version) VALUES (:m, :v);"
+                    ),
+                    {"m": mod.name, "v": mod.search.version},
+                )
+                await s.commit()
+            log.info("re-indexed %s: %d entries", mod.name, count)
+        except Exception:  # try again at the next start; search keeps the old entries
+            log.exception("re-indexing %s failed", mod.name)
 
 
 async def _index_tools(runtime: Runtime) -> None:

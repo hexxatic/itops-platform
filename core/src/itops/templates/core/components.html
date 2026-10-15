@@ -42,6 +42,112 @@
 <div class="stat"><span class="stat-value">{{ value }}</span><span class="stat-label">{{ label }}</span></div>
 {%- endmacro %}
 
+{#- Where a figure comes from (ADR 0016): basis = "data" | "partial" | "estimate", with an
+    optional note (shown on hover and to screen readers). -#}
+{% macro basis(kind, note=None) -%}
+{% set labels = {"data": "From data", "partial": "Partly estimated", "estimate": "Estimate"} %}
+{% set tones = {"data": "success", "partial": "warning", "estimate": "neutral"} %}
+<span class="badge badge-{{ tones.get(kind, 'neutral') }} basis"{% if note %} title="{{ note }}"{% endif %}>{{ labels.get(kind, kind) }}{% if note %}<span class="visually-hidden">: {{ note }}</span>{% endif %}</span>
+{%- endmacro %}
+
+{#- Dashboard numbers. tiles: [{label, value, change?, change_tone? (success|warning|danger|
+    neutral), basis?, basis_note?, href?}]. value is shown as given (format it first:
+    |money, |number). -#}
+{% macro stat_tiles(tiles) -%}
+<div class="stat-tiles">
+  {% for t in tiles %}
+  <div class="stat-tile">
+    <span class="stat-label">{% if t.href %}<a href="{{ t.href }}">{{ t.label }}</a>{% else %}{{ t.label }}{% endif %}</span>
+    <span class="stat-value">{{ t.value }}</span>
+    {% if t.change or t.basis %}<span class="stat-meta">
+      {%- if t.change %}<span class="stat-change stat-change-{{ t.change_tone or 'neutral' }}">{{ t.change }}</span>{% endif %}
+      {%- if t.basis %} {{ basis(t.basis, t.basis_note) }}{% endif -%}
+    </span>{% endif %}
+  </div>
+  {% endfor %}
+</div>
+{%- endmacro %}
+
+{#- A chart drawn as SVG on the server (core/charts.py). kind: bar | stacked | line.
+    labels: category names (x axis); series: [{name, values}] aligned with labels (None
+    for a gap). money=True formats as currency; unit labels plain numbers. The numbers are
+    also in a table for screen readers (and in the "Show numbers" disclosure). -#}
+{% macro chart(kind, labels, series, title, money=False, unit="", height=220, show_numbers=True) -%}
+{% set c = chart_layout(kind, labels, series, height=height, is_money=money, unit=unit) %}
+{% set cid = "chart-" ~ (title|lower|replace(" ", "-")|truncate(40, True, "")) ~ "-" ~ (labels|length) %}
+<figure class="chart">
+  <figcaption class="chart-title" id="{{ cid }}">{{ title }}</figcaption>
+  {% if c.legend|length > 1 %}
+  <ul class="chart-legend">{% for l in c.legend %}<li><span class="chart-swatch chart-s{{ l.series }}"></span>{{ l.name }}</li>{% endfor %}</ul>
+  {% endif %}
+  <svg class="chart-svg" viewBox="0 0 {{ c.width }} {{ c.height }}" role="img" aria-labelledby="{{ cid }}" preserveAspectRatio="xMidYMid meet">
+    {% for t in c.y_ticks %}
+    <line class="chart-grid" x1="{{ c.plot.x }}" x2="{{ c.plot.x + c.plot.w }}" y1="{{ t.y }}" y2="{{ t.y }}"/>
+    <text class="chart-axis" x="{{ c.plot.x - 6 }}" y="{{ t.y }}" text-anchor="end" dominant-baseline="middle">{{ t.text }}</text>
+    {% endfor %}
+    <line class="chart-baseline" x1="{{ c.plot.x }}" x2="{{ c.plot.x + c.plot.w }}" y1="{{ c.zero }}" y2="{{ c.zero }}"/>
+    {% for b in c.bars %}
+    <rect class="chart-bar chart-s{{ b.series }}" x="{{ b.x }}" y="{{ b.y }}" width="{{ b.w }}" height="{{ b.h }}" rx="2"><title>{{ b.title }}</title></rect>
+    {% endfor %}
+    {% for l in c.lines %}
+    <path class="chart-line chart-s{{ l.series }}" d="{{ l.d }}"/>
+    {% for p in l.points %}<circle class="chart-point chart-s{{ l.series }}" cx="{{ p.x }}" cy="{{ p.y }}" r="3.5"><title>{{ p.title }}</title></circle>{% endfor %}
+    {% endfor %}
+    {% for x in c.x_labels %}
+    <text class="chart-axis" x="{{ x.x }}" y="{{ c.plot.y + c.plot.h + 16 }}" text-anchor="middle">{{ x.text }}</text>
+    {% endfor %}
+  </svg>
+  {% if show_numbers %}
+  <details class="chart-numbers">
+    <summary>Show numbers</summary>
+    {{ _chart_table(c, title) }}
+  </details>
+  {% else %}
+  <div class="visually-hidden">{{ _chart_table(c, title) }}</div>
+  {% endif %}
+</figure>
+{%- endmacro %}
+
+{% macro _chart_table(c, title) -%}
+<div class="table-wrap">
+  <table class="table table-compact">
+    <caption class="visually-hidden">{{ title }}</caption>
+    <thead><tr><th scope="col"></th>{% for l in c.table.labels %}<th scope="col">{{ l }}</th>{% endfor %}</tr></thead>
+    <tbody>{% for r in c.table.rows %}<tr><th scope="row">{{ r.name }}</th>{% for v in r.cells %}<td class="num">{{ v }}</td>{% endfor %}</tr>{% endfor %}</tbody>
+  </table>
+</div>
+{%- endmacro %}
+
+{#- A ranked list with a proportion bar. rows: [{label, value, display?, href?}] (display:
+    the value as shown, e.g. |money; defaults to |number). Largest first unless sort=False. -#}
+{% macro breakdown(rows, empty="Nothing to show.", sort=True, limit=None) -%}
+{% set items = (rows|sort(attribute="value", reverse=True) if sort else rows)|list %}
+{% set items = items[:limit] if limit else items %}
+{% if items %}
+{% set top = items|map(attribute="value")|map("abs")|max or 1 %}
+<ol class="breakdown">
+  {% for r in items %}
+  <li class="breakdown-row">
+    <span class="breakdown-label">{% if r.href %}<a href="{{ r.href }}">{{ r.label }}</a>{% else %}{{ r.label }}{% endif %}</span>
+    <span class="breakdown-value num">{{ r.display if r.display is defined and r.display is not none else r.value|number }}</span>
+    <svg class="breakdown-bar" viewBox="0 0 100 4" preserveAspectRatio="none" aria-hidden="true"><rect class="breakdown-track" width="100" height="4"/><rect class="breakdown-fill" width="{{ (r.value|abs) / top * 100 }}" height="4"/></svg>
+  </li>
+  {% endfor %}
+</ol>
+{% else %}
+{{ empty_state(empty) }}
+{% endif %}
+{%- endmacro %}
+
+{#- Download links for a list (itops.sdk.export): url gets ?format=csv / ?format=xlsx
+    (existing query parameters kept). -#}
+{% macro export_links(url, label="Download") -%}
+{% set sep = "&" if "?" in url else "?" %}
+<span class="export-links"><span class="muted">{{ label }}:</span>
+  <a href="{{ url }}{{ sep }}format=xlsx" download>Excel</a>
+  <a href="{{ url }}{{ sep }}format=csv" download>CSV</a></span>
+{%- endmacro %}
+
 {#- Progress of something running. With a total it fills; without one it shows activity. -#}
 {% macro progress(label, done=0, total=None) -%}
 <div class="progress-field">
@@ -109,6 +215,33 @@
     {% endfor %}
   </select>
 </label>
+{%- endmacro %}
+
+{#- A checkbox inside a <form>: sends value "1" when ticked, nothing when not. -#}
+{% macro checkbox(name, label, checked=False, help=None) -%}
+<div class="field">
+  <label class="check"><input type="checkbox" name="{{ name }}" value="1"{% if checked %} checked{% endif %}> {{ label }}</label>
+  {% if help %}<span class="field-help">{{ help }}</span>{% endif %}
+</div>
+{%- endmacro %}
+
+{#- Who sees an area (ADR 0012), from module.areas.access(kind, key): badges when it's
+    restricted or kept out of AI (nothing otherwise). -#}
+{% macro access_badges(access) -%}
+{%- if access.restricted %}{{ badge("Restricted", "warning") }}{% endif -%}
+{%- if access.no_ai %} {{ badge("Not for AI", "info") }}{% endif -%}
+{%- endmacro %}
+
+{#- The same, spelled out, with a "Change access" button for admins (inside a card). -#}
+{% macro access_summary(access) -%}
+<div class="stack">
+  <p>
+    {%- if access.restricted %}{{ badge("Restricted", "warning") }} Only {{ access.groups|join(", ") }} (and admins) see it.
+    {%- else %}Everyone with access to this module sees it.{% endif -%}
+    {%- if access.no_ai %} {{ badge("Not for AI", "info") }} Kept out of AI connections.{% endif -%}
+  </p>
+  {% if access.href %}<div class="actions">{{ button("Change access", href=access.href) }}</div>{% endif %}
+</div>
 {%- endmacro %}
 
 {#- A one-button form that POSTs to `action` (no JavaScript needed). -#}
@@ -351,6 +484,102 @@
 </label>
 {%- endmacro %}
 
+{#- Logins kept in 1Password: items = [{label, ref}], ref an op:// reference or a 1Password
+    item link (check with itops.sdk.types.credential_ref). Never the secret itself. -#}
+{% macro login_list(items, empty="No logins.") -%}
+{% if items %}
+<ul class="logins">
+  {% for l in items %}
+  <li class="login">
+    <span class="login-label">{{ l.label }}</span>
+    {% if l.ref.startswith("https://") -%}
+      <a href="{{ l.ref }}" target="_blank" rel="noopener noreferrer">Open in 1Password</a>
+    {%- else -%}
+      <code class="login-ref" title="1Password reference">{{ l.ref }}</code>
+    {%- endif %}
+  </li>
+  {% endfor %}
+</ul>
+{% else %}
+<p class="muted">{{ empty }}</p>
+{% endif %}
+{%- endmacro %}
+
+{#- Edit logins inside a <form>: one row per login (label + reference) plus `spare` empty
+    rows. They arrive as repeated `label_name` / `ref_name` values, in order; a row with
+    both emptied is removed. -#}
+{% macro login_editor(items, label_name="login_label", ref_name="login_ref", spare=2) -%}
+<div class="login-editor">
+  {% for l in (items or []) + [{"label": "", "ref": ""}] * spare %}
+  <div class="login-row">
+    <label class="field">
+      <span class="field-label">What it logs into</span>
+      <input class="input" name="{{ label_name }}" value="{{ l.label }}" placeholder="e.g. Keyence console (admin)">
+    </label>
+    <label class="field">
+      <span class="field-label">1Password reference or link</span>
+      <input class="input" name="{{ ref_name }}" value="{{ l.ref }}" autocomplete="off" spellcheck="false" placeholder="op://vault/item/field, or a 1Password item link">
+    </label>
+  </div>
+  {% endfor %}
+  <span class="field-help">In 1Password: Copy Private Link on the item, or Copy Secret Reference on a field. Never the password itself. Clear both boxes to remove a login.</span>
+</div>
+{%- endmacro %}
+
+{#- A stored file shown in the page next to what was taken from it (ADR 0015): PDFs drawn by
+    the vendored PDF.js (a canvas; nothing in the file runs), other files as their extracted
+    text by page. file = {id, filename}; pages = module.files.text(...) (used for non-PDFs).
+    Page through, zoom, full screen, download. ui.show_in_document(id, page, quote) jumps to
+    a page and highlights a quote. -#}
+{% macro document_viewer(file, pages=[], id="doc-viewer") -%}
+{% set is_pdf = file.filename.lower().endswith(".pdf") %}
+<div class="doc-viewer" id="{{ id }}" data-doc-viewer data-kind="{{ 'pdf' if is_pdf else 'text' }}"
+     data-src="/files/{{ file.id }}" data-total="{{ pages|length if not is_pdf else 1 }}"
+     data-pdfjs="/static/vendor/pdfjs/pdf.min.mjs?v={{ asset_version() }}"
+     data-worker="/static/vendor/pdfjs/pdf.worker.min.mjs?v={{ asset_version() }}">
+  <div class="doc-viewer-bar">
+    <span class="doc-viewer-name" title="{{ file.filename }}">{{ file.filename }}</span>
+    <span class="doc-viewer-tools">
+      <button type="button" class="btn btn-ghost" data-prev aria-label="Previous page">‹</button>
+      <span class="muted" data-pageinfo>Page 1</span>
+      <button type="button" class="btn btn-ghost" data-next aria-label="Next page">›</button>
+      <button type="button" class="btn btn-ghost" data-zoom-out aria-label="Zoom out">−</button>
+      <span class="muted" data-zoominfo>100%</span>
+      <button type="button" class="btn btn-ghost" data-zoom-in aria-label="Zoom in">+</button>
+      <button type="button" class="btn btn-ghost" data-full>Full screen</button>
+      <a class="btn btn-ghost" href="/files/{{ file.id }}" download>Download</a>
+    </span>
+  </div>
+  <p class="doc-viewer-note muted" data-note hidden></p>
+  <div class="doc-viewer-pages" data-pages>
+    {% if not is_pdf %}
+      {% for text in pages %}
+      <section class="doc-text-page" data-page="{{ loop.index }}">
+        {% if pages|length > 1 %}<h4 class="muted">Page {{ loop.index }}</h4>{% endif %}
+        <pre>{{ text }}</pre>
+      </section>
+      {% else %}<p class="muted">No text could be read from this file. Download it to read it.</p>{% endfor %}
+    {% endif %}
+  </div>
+</div>
+<script src="/static/islands/doc-viewer.js?v={{ asset_version() }}" defer></script>
+{%- endmacro %}
+
+{#- A button that shows `quote` on `page` in the document_viewer `viewer`. -#}
+{% macro show_in_document(viewer, page, quote, label="Show") -%}
+<button type="button" class="btn btn-ghost doc-show" data-viewer="{{ viewer }}" data-show-page="{{ page }}"
+        data-show-quote="{{ quote }}">{{ label }} · p.{{ page }}</button>
+{%- endmacro %}
+
+{#- Suggestions and the document side by side (stacked on narrow screens). Call with
+    part == "main" for the left column, "side" for the document. -#}
+{% macro review_layout() -%}
+<div class="review-layout">
+  <div class="review-main">{{ caller("main") }}</div>
+  <div class="review-side">{{ caller("side") }}</div>
+</div>
+{%- endmacro %}
+
 {#- A record's field values (record types, ADR 0008). values: {key: value}; links:
     {"module:kind:id": {"text", "href"}} for link fields the module could resolve. -#}
 {% macro field_values(definition, values, links={}) -%}
@@ -365,7 +594,9 @@
       {%- for item in items -%}
         {%- if f.kind == "link" -%}
           {%- set lk = item.module ~ ":" ~ item.kind ~ ":" ~ item.id -%}
-          {%- if links.get(lk) %}<a href="{{ links[lk].href }}">{{ links[lk].text }}</a>{% else %}<code>{{ lk }}</code>{% endif -%}
+          {%- if links.get(lk) and links[lk].href %}<a href="{{ links[lk].href }}">{{ links[lk].text }}</a>
+          {%- elif links.get(lk) %}{{ badge(links[lk].text) }}
+          {%- else %}<code>{{ lk }}</code>{% endif -%}
         {%- elif f.kind == "url" -%}
           <a href="{{ item }}" target="_blank" rel="noopener noreferrer">{{ item }}</a>
         {%- elif f.kind == "credential" -%}
@@ -373,6 +604,8 @@
           {%- else -%}<code>{{ item }}</code> <span class="muted">1Password reference</span>{%- endif -%}
         {%- elif f.kind == "select" -%}{{ badge(item, "info") }}
         {%- elif f.kind == "longtext" -%}<span class="field-longtext">{{ item }}</span>
+        {%- elif f.kind == "money" -%}<span class="num">{{ item|money }}</span>
+        {%- elif f.kind == "datetime" -%}{{ item|replace("T", " ") }}
         {%- else -%}{{ item }}{%- endif -%}
         {%- if not loop.last and f.kind not in ("select", "credential") %}, {% endif -%}
       {%- endfor -%}
@@ -417,7 +650,9 @@
   {% else %}
     <input class="input" name="{{ name }}" value="{{ v if v is not none else '' }}"{% if off %} disabled{% endif %}
       {%- if f.kind == "number" %} type="number" step="any"
+      {%- elif f.kind == "money" %} type="number" step="0.01" inputmode="decimal"
       {%- elif f.kind == "date" %} type="date"
+      {%- elif f.kind == "datetime" %} type="datetime-local" step="60"
       {%- elif f.kind == "url" %} type="url" placeholder="https://"
       {%- elif f.kind == "credential" %} autocomplete="off" spellcheck="false" placeholder="op://vault/item/field, or a 1Password item link"
       {%- else %} type="text"{% endif %}>

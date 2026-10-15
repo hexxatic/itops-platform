@@ -6,6 +6,7 @@
   {{ ui.button("All collections", href="/docs/") }}
   {% if can_write %}{{ ui.button("New document", href="/docs/new?collection=" ~ collection.id, variant="primary") }}{% endif %}
 {% endcall %}
+{% if access.restricted or access.no_ai %}{% call ui.card() %}{{ ui.access_summary(access) }}{% endcall %}{% endif %}
 {{ ui.filter_toggle("archived", "Show archived", show_archived) }}
 {% call ui.card() %}
   {{ ui.table([("title", "Title"), ("type", "Type"), ("status", "Status"), ("updated", "Updated")], rows,

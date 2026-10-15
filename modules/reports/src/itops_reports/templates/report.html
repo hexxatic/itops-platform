@@ -1,0 +1,70 @@
+{% extends "core/shell.html" %}
+{% import "core/components.html" as ui %}
+{% block content %}
+{{ ui.breadcrumb([("Reports", "/reports/"), (d.title, None)]) }}
+{% call ui.page_header(d.title, d.description or None) %}
+  {% if can_publish %}{{ ui.button("Edit", href="/reports/r/" ~ d.key ~ "/edit") }}{% endif %}
+{% endcall %}
+{% if error %}{{ ui.alert(error, "danger") }}{% endif %}
+
+{% if draft %}
+{% call ui.alert("", "info") %}
+<strong>You're looking at a draft</strong>{% if draft_by %} by {{ draft_by }}{% endif %}. Readers see {% if d.config %}the published version{% else %}nothing until it's published{% endif %}.
+<div class="actions">
+  {{ ui.action_button("Publish", "/api/reports/r/" ~ d.key ~ "/publish", "primary") }}
+  {{ ui.action_button("Discard draft", "/api/reports/r/" ~ d.key ~ "/discard", "ghost", confirm="Discard this draft?") }}
+  {% if d.config %}{{ ui.button("Show the published version", href="/reports/r/" ~ d.key) }}{% endif %}
+</div>
+{% endcall %}
+{% elif has_draft and can_publish %}
+{% call ui.alert("", "info") %}An AI connection drafted changes to this report. <a href="/reports/r/{{ d.key }}?draft=1">Review the draft</a>.{% endcall %}
+{% endif %}
+
+<form method="get" action="/reports/r/{{ d.key }}" class="row">
+  {% if draft and d.config %}<input type="hidden" name="draft" value="1">{% endif %}
+  {% for name, value in drill_params %}<input type="hidden" name="{{ name }}" value="{{ value }}">{% endfor %}
+  {% if windows %}{{ ui.select("days", "Time", windows, selected=days) }}{% endif %}
+  {{ ui.field("q", "Search", value=query) }}
+  <div class="actions">{{ ui.button("Show", type="submit") }}{% if query or drills or days != "all" %}{{ ui.button("Clear", href=clear_url, variant="ghost") }}{% endif %}</div>
+</form>
+{% if drills %}
+<p>Only rows where {% for f in drills %}{{ f.text }} <a href="{{ f.href }}" aria-label="Remove this filter">✕</a>{% if not loop.last %}, and {% endif %}{% endfor %}</p>
+{% endif %}
+{% if filters_text %}<p class="muted">This report always shows rows where {{ filters_text|join("; ") }}.</p>{% endif %}
+{% if truncated %}{{ ui.alert("This dataset has more rows than a report reads at once; the oldest were left out. Choose a shorter time.", "warning") }}{% endif %}
+
+{% if tiles %}{{ ui.stat_tiles(tiles) }}{% endif %}
+
+{% if trend %}
+{% call ui.card() %}
+{{ ui.chart(trend.chart, trend.labels, trend.series, trend.label, money=trend.money) }}
+{% endcall %}
+{% endif %}
+
+{% if breakdowns %}
+<div class="grid-2">
+  {% for b in breakdowns %}
+  {% call ui.card(b.label) %}
+  <p class="muted">{{ b.measure }}. Choose one to see only its rows.</p>
+  {{ ui.breakdown(b.rows, sort=False) }}
+  {% if b.more %}<p class="muted">And {{ b.more }} more.</p>{% endif %}
+  {% endcall %}
+  {% endfor %}
+</div>
+{% endif %}
+
+{% call ui.card("Rows") %}
+<div class="row">
+  <p class="muted">{{ shown }} row{{ "" if shown == 1 else "s" }}{% if shown > 100 %}; the newest 100 are shown, downloads have all of them{% endif %}.</p>
+  {{ ui.export_links(export_url) }}
+</div>
+{{ ui.table(detail_columns, detail, empty="No rows match.") }}
+{% endcall %}
+
+{% if access %}
+{% call ui.card("Who sees this report") %}{{ ui.access_summary(access) }}{% endcall %}
+{% endif %}
+{% if can_publish and d.config %}
+<div class="actions">{{ ui.action_button("Delete report", "/api/reports/r/" ~ d.key ~ "/delete", "danger", confirm="Delete this report? Its data stays in the dataset.") }}</div>
+{% endif %}
+{% endblock %}

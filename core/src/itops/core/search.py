@@ -14,8 +14,8 @@ Ranking blends two signals (reciprocal rank fusion):
   Meaning-only matches must be close enough (``MEANING_MAX_DISTANCE``) so nonsense
   queries don't return random documents. Without the model, search is keyword-only.
 
-Results are filtered to what the searcher may read and collapsed to the best passage per
-entity.
+Results are filtered to what the searcher may read (the read permission, and areas they
+can't see: ADR 0012, ``areas.py``) and collapsed to the best passage per entity.
 
 **Typos** (``spelling``): query words IT-Ops has never seen are matched to the closest
 terms in its own vocabulary (built from this index, so technical names count). The
@@ -41,6 +41,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from itops.core import auth
 from itops.core.ai import AIService, AIUnavailable
+from itops.core.areas import Areas
 from itops.core.content import Passage
 from itops.core.spelling import Vocabulary
 
@@ -160,22 +161,33 @@ class SearchIndex:
         self._vocabulary: Vocabulary | None = None
         self._vocabulary_at = 0.0
         self._vocabulary_lock = asyncio.Lock()
+        self.areas: Areas | None = None  # set by the app: restricted areas (ADR 0012)
 
     async def vocabulary(self, s: AsyncSession) -> Vocabulary:
-        """Every term in the index (archived and restricted content included: the
-        vocabulary only rewrites queries; results are still filtered). Loaded on first
-        use, grown as content is indexed, reloaded now and then."""
+        """Every term in the index (archived content included: the vocabulary only
+        rewrites queries; results are still filtered). Restricted areas are left out, so
+        "also showing results for" can't reveal their words. Loaded on first use, grown as
+        content is indexed, reloaded now and then (and when a restriction changes)."""
         if self._vocabulary is None or time.monotonic() - self._vocabulary_at > VOCABULARY_REFRESH:
             async with self._vocabulary_lock:
                 stale = time.monotonic() - self._vocabulary_at > VOCABULARY_REFRESH
                 if self._vocabulary is None or stale:
                     rows = await s.execute(
-                        text("SELECT title, label, text FROM itops.search_passages")
+                        text("SELECT title, label, text, area FROM itops.search_passages")
+                    )
+                    restricted: frozenset[str] = (
+                        await self.areas.restricted() if self.areas else frozenset()
                     )
                     vocabulary = Vocabulary()
-                    vocabulary.add_all(f"{r[0]} {r[1]} {r[2]}" for r in rows)
+                    vocabulary.add_all(
+                        f"{r[0]} {r[1]} {r[2]}" for r in rows if r[3] not in restricted
+                    )
                     self._vocabulary, self._vocabulary_at = vocabulary, time.monotonic()
         return self._vocabulary
+
+    def forget_vocabulary(self) -> None:
+        """Rebuild the vocabulary on next use (a restriction changed)."""
+        self._vocabulary = None
 
     async def has_fulltext(self, s: AsyncSession) -> bool:
         if self._fulltext is None:
@@ -242,8 +254,10 @@ class SearchIndex:
         read_permission: str,
         passages: Iterable[Passage],
         archived: bool = False,
+        area: str | None = None,
     ) -> int:
-        """Replace everything indexed for one entity. Returns the passage count."""
+        """Replace everything indexed for one entity. Returns the passage count. ``area``:
+        the area it's in ('<module>:<kind>:<key>', ADR 0012), if the module has areas."""
         await self.remove(s, module=module, kind=kind, entity_id=entity_id)
         rows = [c for p in passages if p.text.strip() for c in chunk(p)] or [
             Passage(label="", anchor=None, text=title)  # e.g. a doc with only headings
@@ -273,10 +287,11 @@ class SearchIndex:
                 "x": p.text,
                 "p": read_permission,
                 "ar": archived,
+                "area": area,
             }
             cols = "module, kind, entity_id, title, url, label, anchor, text, "
-            cols += "read_permission, archived"
-            vals = ":m, :k, :e, :t, :u, :l, :a, :x, :p, :ar"
+            cols += "read_permission, archived, area"
+            vals = ":m, :k, :e, :t, :u, :l, :a, :x, :p, :ar, :area"
             if vectors is not None:
                 assert self._ai is not None
                 params["v"] = _vector(vectors[i])
@@ -286,7 +301,10 @@ class SearchIndex:
             await s.execute(
                 text(f"INSERT INTO itops.search_passages ({cols}) VALUES ({vals})"), params
             )
-        if self._vocabulary is not None:
+        restricted: frozenset[str] = (
+            await self.areas.restricted() if self.areas and area else frozenset()
+        )
+        if self._vocabulary is not None and area not in restricted:
             self._vocabulary.add_all(f"{title} {p.label} {p.text}" for p in rows)
         return len(rows)
 
@@ -319,6 +337,12 @@ class SearchIndex:
             filters += " AND p.read_permission IN (" + ", ".join(":" + n for n in names) + ")"
         if not include_archived:
             filters += " AND p.archived = 0"
+        hidden = sorted(await self.areas.hidden(principal)) if self.areas else []
+        if hidden:
+            names = [f"h{i}" for i in range(len(hidden))]
+            params.update(dict(zip(names, hidden, strict=True)))
+            filters += " AND (p.area IS NULL OR p.area NOT IN ("
+            filters += ", ".join(":" + n for n in names) + "))"
         cols = "p.module, p.kind, p.entity_id, p.title, p.url, p.label, p.anchor, p.text"
         cols += ", p.archived"
 

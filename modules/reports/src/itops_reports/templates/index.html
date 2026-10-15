@@ -1,0 +1,34 @@
+{% extends "core/shell.html" %}
+{% import "core/components.html" as ui %}
+{% block content %}
+{% call ui.page_header("Reports", "Dashboards built on data from connectors or typed in.") %}
+  {{ ui.button("Datasets", href="/reports/datasets") }}
+  {% if can_publish %}{{ ui.button("New report", href="/reports/new", variant="primary") }}{% endif %}
+{% endcall %}
+{% if error %}{{ ui.alert(error, "danger") }}{% endif %}
+
+{% if drafts %}
+{% call ui.card("Drafted by AI, waiting for you") %}
+<p class="muted">An AI connection drafted these. Open one to check it, then publish or discard it.</p>
+{{ ui.table([("report", "Report"), ("state", ""), ("by", "Drafted by")], drafts) }}
+{% endcall %}
+{% endif %}
+
+{% if reports %}
+<div class="grid">
+  {% for r in reports %}
+  {% call ui.card() %}
+  <h2 class="card-title"><a href="{{ r.href }}">{{ r.title }}</a></h2>
+  {% if r.description %}<p>{{ r.description }}</p>{% endif %}
+  <p class="muted">From {{ r.dataset }}</p>
+  {% endcall %}
+  {% endfor %}
+</div>
+{% else %}
+{% call ui.card() %}
+{% call ui.empty_state("No reports yet", "A report shows a dataset as tiles, charts and a list you can download.") %}
+{% if can_publish %}<div class="actions">{{ ui.button("New report", href="/reports/new", variant="primary") }}</div>{% endif %}
+{% endcall %}
+{% endcall %}
+{% endif %}
+{% endblock %}

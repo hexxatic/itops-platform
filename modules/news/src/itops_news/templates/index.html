@@ -1,0 +1,43 @@
+{% extends "core/shell.html" %}
+{% import "core/components.html" as ui %}
+{% block content %}
+{% call ui.page_header("News", "Updates to IT-Ops and announcements from the IT department.") %}
+  {{ ui.button("Archive", href="/news/archive", variant="ghost") }}
+  {% if can_write %}{{ ui.button("New post", href="/news/new" ~ ("?category=" ~ category if category else ""), variant="primary") }}{% endif %}
+{% endcall %}
+{% if error %}{{ ui.alert(error, "danger") }}{% endif %}
+
+<div class="row" role="group" aria-label="Show">
+  {% for f in filters %}{{ ui.button(f.label, href=f.href, variant="primary" if f.current else "ghost") }}{% endfor %}
+</div>
+
+{% if drafts %}
+{% call ui.card("Drafts") %}
+<p class="muted">Only people who can write news see these.{% if can_publish %} Oldest first: publish them in this order and the newest ends up on top.{% endif %}</p>
+{{ ui.table([("title", "Title"), ("category", "Kind"), ("by", "By"), ("updated", "Updated")], drafts) }}
+{% endcall %}
+{% endif %}
+
+{% for p in posts %}
+{% call ui.card() %}
+<div class="stack">
+  <h2 class="card-title"><a href="{{ p.href }}">{{ p.title }}</a></h2>
+  <div class="row meta-row">
+    {% if p.pinned %}{{ ui.badge("Pinned", "warning") }}{% endif %}
+    {{ ui.badge(p.category, p.tone) }}
+    <span class="muted">{{ p.when }} · {{ p.by }}</span>
+  </div>
+  {{ ui.content(p.blocks) }}
+</div>
+{% endcall %}
+{% else %}
+{{ ui.empty_state("No news yet", "Updates to IT-Ops and IT announcements show up here.") }}
+{% endfor %}
+
+{% if older or newer %}
+<div class="row">
+  {% if newer %}{{ ui.button("Newer", href=newer, variant="ghost") }}{% endif %}
+  {% if older %}{{ ui.button("Older", href=older, variant="ghost") }}{% endif %}
+</div>
+{% endif %}
+{% endblock %}

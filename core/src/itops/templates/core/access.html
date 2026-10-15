@@ -1,0 +1,23 @@
+{% extends "core/shell.html" %}
+{% import "core/components.html" as ui %}
+{% block content %}
+{% call ui.page_header(page_title, "Who sees this " ~ area_kind|lower ~ ". Roles still decide what people may do here; these settings decide whether they see it at all.") %}
+  {{ ui.button("Back", href=back) }}
+{% endcall %}
+{% if error %}{{ ui.alert(error, "danger") }}{% endif %}
+<form method="post" action="{{ action }}" class="stack">
+{% call ui.card("Groups") %}
+<div class="stack">
+  <p class="muted">Leave empty and everyone with access to the module sees it. Name AD security groups (one per line) and only their members, nested groups included, and admins see it; for everyone else it doesn't exist (missing from lists and search, its pages "not found").</p>
+  {{ ui.field("groups", "AD groups", groups, type="textarea", help="The group's name in AD (sAMAccountName), e.g. App-ITOps-Security. A membership change counts from the person's next sign-in, or within the hour for AI connections.") }}
+</div>
+{% endcall %}
+{% call ui.card("AI connections") %}
+{{ ui.checkbox("no_ai", "Keep out of AI connections", checked=no_ai, help="ChatGPT, Claude and personal access tokens never see it, whoever is asking, admins included. People still see it in the browser.") }}
+{% endcall %}
+<div class="actions">{{ ui.button("Save", type="submit", variant="primary") }}</div>
+</form>
+{% if current and current.updated_at %}
+<p class="muted">Last changed by {{ current.updated_by }}, {{ current.updated_at.strftime("%Y-%m-%d %H:%M UTC") }}. Every change is in the audit trail.</p>
+{% endif %}
+{% endblock %}

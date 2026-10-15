@@ -1,0 +1,13 @@
+{% extends "core/shell.html" %}
+{% import "core/components.html" as ui %}
+{% block content %}
+{{ ui.breadcrumb([("Contracts", "/contracts/"), ("Costs", None)]) }}
+{{ ui.page_header("Contract costs", "What active contracts' current terms cost, per year. One-off costs are counted separately.") }}
+{% call ui.card() %}<div class="row">{{ ui.stat("Per year", total) }}{{ ui.stat("One-off", one_off) }}</div>{% endcall %}
+{% call ui.card("By category") %}{{ ui.table([("name", "Category"), ("yearly", "Per year")], by_category, empty="No costs recorded yet.") }}{% endcall %}
+{% call ui.card("By vendor") %}{{ ui.table([("name", "Vendor"), ("yearly", "Per year")], by_vendor, empty="No costs recorded yet.") }}{% endcall %}
+{% call ui.card("Contracts") %}
+{{ ui.table([("name", "Contract"), ("vendor", "Vendor"), ("cost", "Cost"), ("yearly", "Per year"), ("term", "Term")], rows,
+            empty="No costs recorded yet.") }}
+{% endcall %}
+{% endblock %}

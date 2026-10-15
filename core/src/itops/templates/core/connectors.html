@@ -7,4 +7,11 @@
              ("state", "State"), ("last", "Last run"), ("when", "Started"), ("next", "Next run")], rows,
             empty="No connectors installed. Each external system (IT Glue, Entra, ...) adds its own.") }}
 {% endcall %}
+{% if job_rows %}
+{% call ui.card("Scheduled jobs") %}
+<p class="muted">Housekeeping modules run on their own data, e.g. noticing renewals coming due.</p>
+{{ ui.table([("name", "Job"), ("module", "Module"), ("schedule", "Schedule"), ("last", "Last run"),
+             ("summary", "Result"), ("when", "Started"), ("next", "Next run")], job_rows) }}
+{% endcall %}
+{% endif %}
 {% endblock %}

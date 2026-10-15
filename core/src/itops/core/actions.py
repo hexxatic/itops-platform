@@ -50,6 +50,21 @@ MAX_TEXT_INPUT = 200
 _COMPUTER_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9.\-]{0,252}$")
 _ENDPOINT_RE = re.compile(r"^[A-Za-z][A-Za-z0-9.\-]{0,62}$")
 _COMMAND_RE = re.compile(r"^[A-Za-z][A-Za-z0-9\-]{0,62}$")
+
+
+def declared(endpoints: list[str], computer: str, endpoint: str) -> bool:
+    """Is ``computer``/``endpoint`` one of the action's declared "HOST/Endpoint" pairs?
+    Names match ignoring case; a declared short host name also covers its fully qualified
+    name (``DC01`` covers ``DC01.corp.example.com``)."""
+    short = computer.split(".", 1)[0].lower()
+    for entry in endpoints:
+        host, _, name = entry.partition("/")
+        host_ok = host.lower() == computer.lower() or ("." not in host and host.lower() == short)
+        if host_ok and name.lower() == endpoint.lower():
+            return True
+    return False
+
+
 _CONTROL_RE = re.compile(r"[\x00-\x1f\x7f]")
 
 
@@ -252,6 +267,12 @@ class ActionContext:
             raise ActionError(f"not an endpoint name: {endpoint!r}")
         if not _COMMAND_RE.match(command):
             raise ActionError(f"not a command name: {command!r}")
+        if not declared(self._decl.endpoints, computer, endpoint):
+            # The manifest's endpoints are the boundary admins review (ADR 0011).
+            raise ActionError(
+                f"{computer}/{endpoint} isn't one of this action's declared endpoints "
+                f"({', '.join(self._decl.endpoints) or 'none'}); add it to its manifest."
+            )
         script = (
             "$ErrorActionPreference = 'Stop'; "
             f"Invoke-Command -ComputerName '{computer}' -ConfigurationName '{endpoint}' "

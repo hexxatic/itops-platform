@@ -600,7 +600,8 @@ class ConnectorRunner:
                                 ctx.count("missing from source", n)
                                 ctx.problem(
                                     f"{n} record(s) are no longer in {reg.decl.system}; "
-                                    "they're flagged on their pages for review.",
+                                    "each one's page says so. Check them and remove what's "
+                                    "really gone.",
                                     item=source_type,
                                 )
                         await s.commit()

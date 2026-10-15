@@ -126,6 +126,7 @@ async def type_list(request: Request) -> dict[str, Any]:
     ]
     return {
         "page_title": type_name,
+        "access": await module.areas.access("type", type_key),
         "type_key": type_key,
         "type_name": type_name,
         "type_noun": _noun(type_name),
@@ -148,7 +149,8 @@ async def record_page(request: Request) -> dict[str, Any]:
     if definition:
         values = known_fields(definition, values)
     link = f"assets:{record.type_key}:{record.id}"
-    documents = [r for r in await module.links.related(link) if r["module"] == "docs"]
+    linking = await module.links.related(link)
+    documents = [r for r in linking if r["module"] == "docs"]
     sources = await module.refs.links(record.type_key, str(record.id))
     by = {f"connector:{src.connector}": f"{src.title} (connector)" for src in sources}
     type_names = {k: v.current.definition.name for k, v in types.items()}
@@ -171,6 +173,11 @@ async def record_page(request: Request) -> dict[str, Any]:
         ],
         "documents": [
             {"name": {"text": r["name"], "href": r["url"]}, "field": r["field"]} for r in documents
+        ],
+        "contracts": [
+            {"name": {"text": r["name"], "href": r["url"]}, "field": r["field"]}
+            for r in linking
+            if r["module"] == "contracts"
         ],
         "linked_from": [
             {
@@ -241,7 +248,8 @@ async def edit_record(request: Request) -> dict[str, Any]:
         "type_name": type_name,
         "definition": definition,
         "values": kept.fields() if kept else known_fields(definition, record_fields(record)),
-        "link_options": await module.links.options(definition),
+        # Keep links the picker wouldn't offer (restricted ones) so a save keeps them.
+        "link_options": await module.links.options(definition, keep=record_fields(record)),
         "error": request.query_params.get("error"),
     }
 

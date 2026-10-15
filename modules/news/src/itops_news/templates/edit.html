@@ -1,0 +1,25 @@
+{% extends "core/shell.html" %}
+{% import "core/components.html" as ui %}
+{% block content %}
+{% if post %}
+  {% call ui.page_header("Edit: " ~ post.title, "Changes to a published post go live when you save." if published else "Saving keeps it a draft. Publishing is a separate step.") %}
+    {{ ui.button("Back to post", href="/news/p/" ~ post.slug) }}
+  {% endcall %}
+{% else %}
+  {{ ui.page_header("New post", "Saving creates a draft. Publishing is a separate step.") }}
+{% endif %}
+{% if error %}{{ ui.alert(error, "danger") }}{% endif %}
+<form method="post" action="{{ '/api/news/posts/' ~ post.slug ~ '/save' if post else '/api/news/posts' }}" class="stack">
+  {% call ui.card() %}
+    <div class="stack">
+      {{ ui.field("title", "Title", value=title, required=True, help="Short and specific, e.g. \"News is live\" or \"Printer maintenance Friday\".") }}
+      {{ ui.select("category", "Kind", categories, selected=category, required=True) }}
+    </div>
+  {% endcall %}
+  {{ ui.section_editor("content", content, "/api/news/files") }}
+  <div class="actions">
+    {{ ui.button("Save" if published else ("Save draft" if post else "Create draft"), type="submit", variant="primary") }}
+    {{ ui.button("Cancel", href="/news/p/" ~ post.slug if post else "/news/") }}
+  </div>
+</form>
+{% endblock %}

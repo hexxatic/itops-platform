@@ -7,7 +7,7 @@
 {% endcall %}
 {% if error %}{{ ui.alert(error, "danger") }}{% endif %}
 {% call ui.card() %}
-  {{ ui.table([("name", "Collection"), ("description", "About"), ("documents", "Documents"), ("up", ""), ("down", ""), ("edit", ""), ("delete", "")],
+  {{ ui.table([("name", "Collection"), ("description", "About"), ("documents", "Documents"), ("access", "Access"), ("up", ""), ("down", ""), ("edit", ""), ("delete", "")],
               rows, empty="No collections yet. Create the first one.") }}
 {% endcall %}
 {% endblock %}

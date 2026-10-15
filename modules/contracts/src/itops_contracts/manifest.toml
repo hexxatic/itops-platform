@@ -1,0 +1,27 @@
+name = "contracts"
+version = "0.3.0"
+title = "Contracts"
+description = "IT contracts: each term's dates, cost and seats, renewals that come due on time, and approval before renewing or cancelling."
+requires = ["core>=0.1"]
+optional = ["docs", "assets"]
+provides = ["lookup", "related", "link_targets", "upsert"]
+
+# Granted by AD group, not by role (ADR 0014): contracts are for a few people. The
+# deployment maps each to groups in ITOPS_PERMISSION_GROUPS; admins hold them all.
+[permissions]
+"contracts.read" = { description = "View contracts and their renewals", grant = "group" }
+"contracts.write" = { description = "Create and change contracts and terms (people edit directly; every change is audited)", grant = "group" }
+"contracts.approve" = { description = "Decide to renew or cancel a contract, accept AI-drafted contracts, archive contracts", human_only = true, grant = "group" }
+"contracts.costs" = { description = "See and change what contracts cost (never shown to AI connections)", grant = "group" }
+
+[events]
+renewal_due = "A term's renewal reminder came due, 120/90/60/30 days before its cancel-by date (payload: id, name, owner, cancel_by, days_left, reminder)"
+renewal_overdue = "A term's cancel-by date passed without a decision; repeated weekly (payload: id, name, owner, cancel_by, days_overdue)"
+renewed = "A contract was renewed: a new term began (payload: id, name, term)"
+cancelled = "A contract was cancelled (payload: id, name, ends_on)"
+
+[jobs.renewals]
+title = "Contract renewals"
+description = "Marks terms whose notice window opened, sends the 120/90/60/30-day reminders, repeats overdue ones weekly, and marks ended terms nobody renewed as lapsed."
+schedule = "daily 06:00"
+permissions = ["contracts.read", "contracts.write"]

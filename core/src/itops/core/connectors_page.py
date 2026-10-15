@@ -106,8 +106,34 @@ def mount_connectors(app: FastAPI, templates: Jinja2Templates, runtime: Runtime)
                     "next": "Now" if due and due <= now else _when(due),
                 }
             )
+        jobs = runtime.jobs
+        job_last = await jobs.last_runs()
+        job_rows: list[dict[str, Any]] = []
+        for job in jobs.all():
+            run = job_last.get(job.key)
+            due = jobs.next_due(job, run)
+            job_rows.append(
+                {
+                    "name": job.decl.title,
+                    "module": job.module,
+                    "schedule": job.decl.schedule.replace("every ", "Every ").replace(
+                        "daily ", "Daily at "
+                    ),
+                    "last": "Never run"
+                    if run is None
+                    else {
+                        "badge": STATUS_TEXT.get(run.status, run.status),
+                        "tone": STATUS_TONE.get(run.status, "neutral"),
+                    },
+                    "summary": run.summary if run else "",
+                    "when": _when(run.started_at) if run else "",
+                    "next": "Now" if due and due <= now else _when(due),
+                }
+            )
         return templates.TemplateResponse(
-            request, "core/connectors.html", {"page_title": "Connectors", "rows": rows}
+            request,
+            "core/connectors.html",
+            {"page_title": "Connectors", "rows": rows, "job_rows": job_rows},
         )
 
     @app.get("/connectors/{key}", response_class=HTMLResponse, include_in_schema=False)

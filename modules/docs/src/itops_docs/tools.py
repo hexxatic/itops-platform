@@ -18,7 +18,13 @@ from itops.sdk.content import Content, from_html, from_markdown, plain_text
 from itops_docs import service
 from itops_docs.app import module
 from itops_docs.models import Document
-from itops_docs.service import DocsError, known_fields, version_attachments, version_fields
+from itops_docs.service import (
+    DocsError,
+    known_fields,
+    version_attachments,
+    version_fields,
+    version_logins,
+)
 
 CONTENT_HELP = (
     "Give the content in exactly ONE of three ways: "
@@ -35,6 +41,13 @@ FIELDS_HELP = (
     "'module:kind:id' (e.g. 'docs:document:<id>'). Credential fields take a 1Password "
     "reference (op://vault/item/field) or 1Password link, NEVER the secret itself. Required "
     "fields may be left empty in a draft; a person fills them before publishing."
+)
+LOGINS_HELP = (
+    "`logins` lists what the document logs into and where its secret lives in 1Password: "
+    "[{label: 'Keyence console (admin)', ref: 'op://vault/item/field' or a 1Password item "
+    "link}]. NEVER the password or secret itself, and never put a secret or a reference in "
+    "the text: say 'log in as admin' and list the login here. Leave `logins` out to keep "
+    "the current ones; a list replaces them all."
 )
 
 
@@ -172,6 +185,7 @@ async def get_document(slug: str, include_draft: bool = False) -> dict[str, Any]
             }
             for a in version_attachments(shown)
         ],
+        "logins": version_logins(shown),
         "blocks": content.model_dump()["blocks"],
         "text": plain_text(content),
     }
@@ -186,6 +200,7 @@ async def create_document(
     tags: list[str] | None = None,
     type: str | None = None,
     fields: dict[str, Any] | None = None,
+    logins: list[dict[str, str]] | None = None,
 ) -> dict[str, Any]:
     """Create a new document. It is saved as a DRAFT: nobody sees it until a person
     reviews and publishes it in the web UI. Tell the user the returned `url` so they
@@ -205,6 +220,7 @@ async def create_document(
             tags=tags or [],
             type_key=type,
             fields=fields,
+            logins=logins,
         )
         await s.commit()
         await s.refresh(doc, ["collection"])
@@ -222,6 +238,7 @@ async def update_document(
     blocks: list[dict[str, Any]] | None = None,
     html: str | None = None,
     fields: dict[str, Any] | None = None,
+    logins: list[dict[str, str]] | None = None,
 ) -> dict[str, Any]:
     """Save new content for an existing document as a new DRAFT version. The published
     version stays what readers see until a person publishes the draft. Always send
@@ -236,7 +253,9 @@ async def update_document(
         doc = await service.by_slug(s, slug)
         if doc is None:
             raise DocsError(f"No document with slug {slug!r}.")
-        version = await service.save(s, _who(), doc, content, note=change_note, fields=fields)
+        version = await service.save(
+            s, _who(), doc, content, note=change_note, fields=fields, logins=logins
+        )
         await s.commit()
         result = _summary(doc)
     return {
@@ -246,11 +265,13 @@ async def update_document(
     }
 
 
-# Registered here so their descriptions carry the content and fields guidance (AI clients
-# read the tool description, not this module).
+# Registered here so their descriptions carry the content, fields and logins guidance (AI
+# clients read the tool description, not this module).
 for _fn in (create_document, update_document):
     module.tool(
         permission="docs.write",
         writes=True,
-        description="\n\n".join([inspect.getdoc(_fn) or "", CONTENT_HELP, FIELDS_HELP]),
+        description="\n\n".join(
+            [inspect.getdoc(_fn) or "", CONTENT_HELP, FIELDS_HELP, LOGINS_HELP]
+        ),
     )(_fn)

@@ -11,6 +11,10 @@ Pages, AI tools and the IT Glue import all call these functions, so the rules li
 * After every change the record's values are re-indexed: ``assets.record_fields``
   (queryable) and the core search index (credential fields are never searched).
 
+**Restricted types** (ADR 0012): an asset type is an area. Records of a type the viewer
+can't see are left out of every read here (lists, lookups, links, proposals, search) and
+can't be written: pages answer 404, tools say they don't exist.
+
 Callers pass a session and commit.
 """
 
@@ -19,6 +23,7 @@ from __future__ import annotations
 import datetime as dt
 import json
 import uuid
+from collections.abc import Sequence
 from typing import Any
 
 from sqlalchemy import delete, func, or_, select
@@ -27,8 +32,9 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from itops.sdk import Principal
 from itops.sdk.content import Passage
 from itops.sdk.types import TypeDef, TypeProblem, TypeView
+from itops_assets import identity as ids
 from itops_assets.app import module
-from itops_assets.models import Proposal, Record, RecordField, utcnow
+from itops_assets.models import Identity, Proposal, Record, RecordField, utcnow
 
 
 class AssetsError(ValueError):
@@ -38,14 +44,21 @@ class AssetsError(ValueError):
 # ---- types ---------------------------------------------------------------------------------
 
 
+async def hidden_types() -> frozenset[str]:
+    """Asset types the current viewer can't see (ADR 0012); usually none."""
+    return await module.areas.hidden("type")
+
+
 async def available_types() -> list[TypeView]:
-    """Types new records can use: published and not retired."""
-    return await module.types.list()
+    """Types new records can use: published, not retired, and visible to the viewer."""
+    hidden = await hidden_types()
+    return [t for t in await module.types.list() if t.key not in hidden]
 
 
 async def all_types() -> dict[str, TypeView]:
-    """Every type (retired and draft-only included), for labels."""
-    return {v.key: v for v in await module.types.list(include_drafts=True)}
+    """Every type the viewer can see (retired and draft-only included), for labels."""
+    hidden = await hidden_types()
+    return {v.key: v for v in await module.types.list(include_drafts=True) if v.key not in hidden}
 
 
 async def type_definition(type_key: str) -> TypeDef:
@@ -106,12 +119,18 @@ def _require_human(who: Principal) -> None:
 # ---- reads -----------------------------------------------------------------------------
 
 
-async def get(s: AsyncSession, record_id: str | uuid.UUID) -> Record | None:
+async def _get(s: AsyncSession, record_id: str | uuid.UUID) -> Record | None:
     try:
         rid = record_id if isinstance(record_id, uuid.UUID) else uuid.UUID(str(record_id))
     except ValueError:
         return None
     return await s.get(Record, rid)
+
+
+async def get(s: AsyncSession, record_id: str | uuid.UUID) -> Record | None:
+    """The record, unless its type is one the viewer can't see."""
+    record = await _get(s, record_id)
+    return record if record is not None and record.type_key not in await hidden_types() else None
 
 
 async def records(
@@ -125,6 +144,8 @@ async def records(
     """Records by name, optionally of one type and matching ``query`` in the name or any
     field value (plain text match; the platform search does meaning)."""
     q = select(Record).order_by(Record.name).limit(limit).offset(offset)
+    if hidden := await hidden_types():
+        q = q.where(Record.type_key.not_in(hidden))
     if type_key:
         q = q.where(Record.type_key == type_key)
     if query.strip():
@@ -250,9 +271,17 @@ def value_text(value: Any) -> str:
     return str(value)
 
 
+# 2: identities (serial, MACs, host name) for matching across sources (ADR 0017).
+module.search.version = 2
+
+
 async def _index(s: AsyncSession, record: Record) -> None:
-    """Rebuild the queryable rows and the search entry for one record."""
+    """Rebuild the queryable rows, the identities and the search entry for one record."""
     await s.execute(delete(RecordField).where(RecordField.record_id == record.id))
+    await s.execute(delete(Identity).where(Identity.record_id == record.id))
+    found = ids.of_values(record.name, record_fields(record), by_name=record.type_key == "device")
+    for kind, value in sorted(found):
+        s.add(Identity(record_id=record.id, kind=kind, value=value[:200]))
     try:
         definition = await type_definition(record.type_key)
     except AssetsError:
@@ -270,7 +299,7 @@ async def _index(s: AsyncSession, record: Record) -> None:
                               value_text=shown[pos][:450])  # fmt: skip
             if f.kind == "date":
                 row.value_date = dt.date.fromisoformat(str(item))
-            elif f.kind == "number":
+            elif f.kind in ("number", "money"):
                 row.value_number = float(item)
             s.add(row)
         if f.kind not in ("credential", "link"):
@@ -284,6 +313,7 @@ async def _index(s: AsyncSession, record: Record) -> None:
         path=f"/r/{record.id}",
         passages=[Passage(label=type_name, anchor=None, text="\n".join([record.name, *lines]))],
         read_permission="assets.read",
+        area=("type", record.type_key),
     )
 
 
@@ -292,8 +322,9 @@ async def reindex_all() -> int:
     """Rebuild every record's search entry and queryable values (``itops search rebuild``)."""
     count = 0
     async with module.session() as s:
-        for record in (await s.execute(select(Record))).scalars():
+        for record in list((await s.execute(select(Record))).scalars()):
             await _index(s, record)
+            await s.commit()  # one at a time: never one long transaction
             count += 1
         await s.commit()
     return count
@@ -312,12 +343,15 @@ async def lookup(
 ) -> list[dict[str, str]]:
     """Assets for link pickers and labels: by ``ids``, or by ``kind`` (type key) and an
     optional name ``query``. Each: {id, kind, name, url}."""
+    hidden = await hidden_types()
     async with module.session() as s:
         if ids is not None:
-            found = [r for i in ids if (r := await get(s, i)) is not None]
+            found = [r for i in ids if (r := await _get(s, i)) is not None]
         else:
             found = await records(s, type_key=kind, query=query, limit=max(1, min(limit, 500)))
-    return [{"id": str(r.id), "kind": r.type_key, "name": r.name, "url": f"/assets/r/{r.id}"}
+    # By id (a link someone made): one of a type the viewer can't see shows as "Restricted".
+    return [{"id": str(r.id), "kind": r.type_key, "restricted": "1"} if r.type_key in hidden
+            else {"id": str(r.id), "kind": r.type_key, "name": r.name, "url": f"/assets/r/{r.id}"}
             for r in found]  # fmt: skip
 
 
@@ -325,16 +359,17 @@ async def lookup(
 async def related(link: str, limit: int = 50) -> list[dict[str, str]]:
     """Assets whose fields link to ``link`` ("module:kind:id", e.g. a document or another
     asset). Each: {id, kind, name, url, field} (field = the label of the linking field)."""
+    q = (
+        select(Record, RecordField.field_key)
+        .join(RecordField, RecordField.record_id == Record.id)
+        .where(RecordField.kind == "link", RecordField.value_text == link)
+        .order_by(Record.name)
+        .limit(max(1, min(limit, 200)))
+    )
+    if hidden := await hidden_types():
+        q = q.where(Record.type_key.not_in(hidden))
     async with module.session() as s:
-        rows = (
-            await s.execute(
-                select(Record, RecordField.field_key)
-                .join(RecordField, RecordField.record_id == Record.id)
-                .where(RecordField.kind == "link", RecordField.value_text == link)
-                .order_by(Record.name)
-                .limit(max(1, min(limit, 200)))
-            )
-        ).all()
+        rows = (await s.execute(q)).all()
     types = await all_types()
     out: list[dict[str, str]] = []
     for r, field_key in rows:
@@ -344,6 +379,21 @@ async def related(link: str, limit: int = 50) -> list[dict[str, str]]:
         out.append({"id": str(r.id), "kind": r.type_key, "name": r.name,
                     "url": f"/assets/r/{r.id}", "field": field})  # fmt: skip
     return out
+
+
+@module.service("describe_area")
+async def describe_area(kind: str, key: str) -> dict[str, str] | None:
+    """An asset type's name and its page, for the core access page (ADR 0012)."""
+    view = await module.types.get(key) if kind == "type" else None
+    return {"name": view.current.definition.name, "url": f"/assets/types/{key}"} if view else None
+
+
+@module.service("area_entities")
+async def area_entities(kind: str, key: str) -> dict[str, Any]:
+    """The records of a type, as search entries (a new restriction marks them)."""
+    async with module.session() as s:
+        ids = await s.execute(select(Record.id).where(Record.type_key == key))
+        return {"kind": "record", "ids": [str(i) for i in ids.scalars()] if kind == "type" else []}
 
 
 @module.service("link_targets")
@@ -400,15 +450,38 @@ async def move_type(type_key: str, to: str) -> dict[str, Any]:
 
 @module.service("upsert")
 async def upsert(
-    *, source_type: str, source_id: str, type_key: str, name: str, fields: dict[str, Any]
-) -> dict[str, Any]:
+    *, source_type: str, source_id: str, type_key: str, name: str, fields: dict[str, Any],
+    duplicates: Sequence[str] = (), identity: dict[str, Any] | None = None,
+) -> dict[str, Any]:  # fmt: skip
     """Create or update the asset a source record maps to. For connector runs only.
 
     The first time, the record is created with every value given. After that only the
     fields the connector owns on this type are updated (people own the rest), and an
     unchanged source record is skipped. In a dry run nothing is written; the outcome says
     what would happen. Returns {outcome: created|updated|unchanged|failed, id, changed,
-    problem}."""
+    problem, merged, kept}.
+
+    ``duplicates`` are other source ids (same source type) for the same thing, when the
+    source holds it more than once. Records they were imported as are merged into this
+    one (``_merge_duplicates``): ``merged`` counts them, ``kept`` says which stayed and why
+    (a person changed it, or another module links to it).
+
+    ``identity`` ({serial, macs, hostname}; ADR 0017): the first time a source record is
+    seen, a record of this type with the same serial, else a shared MAC, else the same host
+    name (unless both have serials that differ) is linked instead of creating one: outcome
+    ``matched``. Several candidates: nothing is created and the outcome is ``failed``."""
+    result = await _upsert(source_type=source_type, source_id=source_id, type_key=type_key,
+                           name=name, fields=fields, identity=identity)  # fmt: skip
+    if duplicates and result["outcome"] != "failed":
+        merged, kept = await _merge_duplicates(source_type, duplicates, type_key, result.get("id"))
+        result |= {"merged": merged, "kept": kept}
+    return result
+
+
+async def _upsert(
+    *, source_type: str, source_id: str, type_key: str, name: str, fields: dict[str, Any],
+    identity: dict[str, Any] | None,
+) -> dict[str, Any]:  # fmt: skip
     run = module.refs.run
     if run is None:
         raise AssetsError("assets.upsert is for connector runs (ADR 0010).")
@@ -432,17 +505,26 @@ async def upsert(
                     await module.refs.seen(s, ref, fingerprint=fp)
                     await s.commit()
                 return {"outcome": "unchanged", "id": str(record.id)}
+            note: str | None = None
+            if record is None and identity:
+                found, note, decided = await _match(s, type_key, identity, run.connector)
+                if not decided:
+                    return {"outcome": "failed", "problem": note}
+                if found is not None:
+                    return await _link_match(s, who, found, owned_keys, source_type, source_id,
+                                             name, fields, fp)  # fmt: skip
             if record is None:
                 if run.dry_run:
                     await _check_type_available(type_key)
                     await _validated(type_key, fields)
                     _clean_name(name)
-                    return {"outcome": "created", "id": None}
+                    return {"outcome": "created", "id": None, **({"problem": note} if note else {})}
                 record = await create(s, who, type_key=type_key, name=name, fields=fields)
                 await module.refs.link(s, source_type, source_id, kind=type_key,
                                        entity_id=str(record.id), fingerprint=fp)  # fmt: skip
                 await s.commit()
-                return {"outcome": "created", "id": str(record.id)}
+                return {"outcome": "created", "id": str(record.id),
+                        **({"problem": note} if note else {})}  # fmt: skip
             new_name, new_fields = _source_values(record, owned_keys, name, fields)
             if run.dry_run:
                 values = await _validated(type_key, new_fields)
@@ -462,6 +544,161 @@ async def upsert(
                     "changed": changed}  # fmt: skip
     except AssetsError as exc:
         return {"outcome": "failed", "problem": str(exc)}
+
+
+def _repoint(value: Any, old: str, new: str) -> Any:
+    """``value`` with links to record ``old`` pointing at record ``new``."""
+    if isinstance(value, list):
+        items: list[Any] = value  # pyright: ignore[reportUnknownVariableType]
+        return [_repoint(v, old, new) for v in items]
+    if isinstance(value, dict):
+        d: dict[str, Any] = value  # pyright: ignore[reportUnknownVariableType]
+        if d.get("module") == module.name and d.get("id") == old:
+            return {**d, "id": new}
+    found: Any = value  # pyright: ignore[reportUnknownVariableType]
+    return found
+
+
+async def _merge_duplicates(
+    source_type: str, source_ids: Sequence[str], type_key: str, into: str | None
+) -> tuple[int, list[str]]:
+    """Merge the records ``source_ids`` were imported as into record ``into``: their
+    references now point at it, assets that linked to them link to it, and they're deleted
+    (audited with their last values). Only records nobody but connectors ever changed and
+    nothing outside Assets links to: others are kept and named, for a person to delete
+    (they're flagged as no longer in the source). A dry run counts what would happen."""
+    run = module.refs.run
+    assert run is not None
+    who = module.current_principal()
+    assert who is not None
+    merged, kept = 0, list[str]()
+    async with module.session() as s:
+        for source_id in source_ids:
+            ref = await module.refs.find(s, source_type, str(source_id))
+            if ref is None:
+                continue
+            other = None if ref.entity_id == into else await _get(s, ref.entity_id)
+            if other is None or other.type_key != type_key:
+                # Merged before (or its record is gone): it's still in the source, so it must
+                # count as seen, or the run's end flags it "no longer in" the source.
+                if not run.dry_run and into is not None:
+                    if ref.entity_id == into:
+                        await module.refs.seen(s, ref, fingerprint=None)
+                    else:
+                        await module.refs.link(s, source_type, str(source_id), kind=type_key,
+                                               entity_id=into, fingerprint=None)  # fmt: skip
+                    await s.commit()
+                continue
+            link = f"{module.name}:{type_key}:{other.id}"
+            people = not (other.created_by.startswith("connector:")
+                          and other.updated_by.startswith("connector:"))  # fmt: skip
+            linked = [] if people else await module.links.related(link)
+            if people or linked:
+                why = ("a person changed it" if people else
+                       f"{linked[0]['name']} ({linked[0]['module']}) links to it")  # fmt: skip
+                kept.append(f"{other.name}: {why}")
+                continue
+            merged += 1
+            if run.dry_run or into is None:
+                continue
+            await module.refs.link(s, source_type, str(source_id), kind=type_key,
+                                   entity_id=into, fingerprint=None)  # fmt: skip
+            for linked in await related(link, limit=200):
+                record = await _get(s, linked["id"])
+                if record is not None and record.id != other.id:
+                    values = {k: _repoint(v, str(other.id), into)
+                              for k, v in record_fields(record).items()}  # fmt: skip
+                    await update(s, who, record, name=record.name, fields=values)
+            await _audit(s, other, "deleted", f"Deleted {other.name}: the source held it "
+                         "more than once; merged into the record kept", kept=into,
+                         last_values=record_fields(other))  # fmt: skip
+            await module.search.remove(s, kind="record", entity_id=str(other.id))
+            module.publish("record_deleted", {"id": str(other.id), "type": other.type_key,
+                                              "name": other.name})  # fmt: skip
+            await s.delete(other)
+            await s.commit()
+    return merged, kept
+
+
+async def _candidates(
+    s: AsyncSession, type_key: str, kind: str, values: Sequence[str]
+) -> list[Record]:
+    if not values:
+        return []
+    q = (
+        select(Record)
+        .join(Identity, Identity.record_id == Record.id)
+        .where(Record.type_key == type_key, Identity.kind == kind, Identity.value.in_(values))
+        .distinct()
+    )
+    return list((await s.execute(q)).scalars())
+
+
+async def _serials(s: AsyncSession, record: Record) -> set[str]:
+    q = select(Identity.value).where(Identity.record_id == record.id, Identity.kind == "serial")
+    return set((await s.execute(q)).scalars())
+
+
+async def _match(
+    s: AsyncSession, type_key: str, identity: dict[str, Any], connector: str
+) -> tuple[Record | None, str | None, bool]:
+    """The record a newly seen source record is (ADR 0017): (record or None, a note for the
+    run, decided). Not decided means several candidates: create nothing."""
+    serial = ids.serial(identity.get("serial"))
+    macs = ids.macs(identity.get("macs"))
+    host = ids.host(identity.get("hostname"))
+    what = host or serial or (macs[0] if macs else "?")
+
+    async def usable(found: list[Record]) -> list[Record]:
+        # A record this connector already syncs from another source record isn't this one:
+        # linking both would make them overwrite each other every run.
+        out: list[Record] = []
+        for r in found:
+            links = await module.refs.links(r.type_key, str(r.id))
+            if all(link.connector != connector for link in links):
+                out.append(r)
+        return out
+
+    def several(found: list[Record], by: str) -> tuple[None, str, bool]:
+        names = ", ".join(sorted(r.name for r in found))
+        return None, f"{what} matches several records by {by} ({names}): merge them first.", False
+
+    for kind, values in (("serial", [serial] if serial else []), ("mac", macs)):
+        found = await usable(await _candidates(s, type_key, kind, values))
+        if len(found) == 1:
+            return found[0], None, True
+        if found:
+            return several(found, kind)
+    found = await usable(await _candidates(s, type_key, "host", [host] if host else []))
+    if serial:
+        reused = [r for r in found if (theirs := await _serials(s, r)) and serial not in theirs]
+        found = [r for r in found if r not in reused]
+        if reused and not found:
+            return None, (f"{what} has the host name of {reused[0].name} with another serial: "
+                          "probably a replacement. Is the old one retired?"), True  # fmt: skip
+    if len(found) == 1:
+        return found[0], None, True
+    if found:
+        return several(found, "host name")
+    return None, None, True
+
+
+async def _link_match(
+    s: AsyncSession, who: Principal, record: Record, owned_keys: frozenset[str],
+    source_type: str, source_id: str, name: str, fields: dict[str, Any], fp: str,
+) -> dict[str, Any]:  # fmt: skip
+    """Link a source record to the existing record it matched; set the fields it owns."""
+    run = module.refs.run
+    assert run is not None
+    new_name, new_fields = _source_values(record, owned_keys, name, fields)
+    if run.dry_run:
+        await _validated(record.type_key, new_fields)
+        return {"outcome": "matched", "id": str(record.id)}
+    changed = await update(s, who, record, name=new_name, fields=new_fields)
+    await module.refs.link(s, source_type, source_id, kind=record.type_key,
+                           entity_id=str(record.id), fingerprint=fp)  # fmt: skip
+    await s.commit()
+    return {"outcome": "matched", "id": str(record.id), "changed": changed}
 
 
 def _source_values(
@@ -539,15 +776,17 @@ async def propose(
 
 
 async def pending_proposals(s: AsyncSession) -> list[Proposal]:
-    rows = await s.execute(
-        select(Proposal).where(Proposal.status == "pending").order_by(Proposal.created_at)
-    )
-    return list(rows.scalars())
+    q = select(Proposal).where(Proposal.status == "pending").order_by(Proposal.created_at)
+    if hidden := await hidden_types():
+        q = q.where(Proposal.type_key.not_in(hidden))
+    return list((await s.execute(q)).scalars())
 
 
 async def decide(s: AsyncSession, who: Principal, p: Proposal, *, approve: bool) -> Record | None:
     """Approve (apply as ``who``) or reject a pending proposal. Human-only."""
     _require_human(who)
+    if p.type_key in await hidden_types():
+        raise AssetsError("That proposal doesn't exist.")
     if p.status != "pending":
         raise AssetsError("That proposal was already decided.")
     record: Record | None = None

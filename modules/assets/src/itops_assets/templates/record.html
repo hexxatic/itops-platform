@@ -31,6 +31,11 @@
     {{ ui.table([("name", "Document"), ("field", "Linked as")], documents) }}
   {% endcall %}
 {% endif %}
+{% if contracts %}
+  {% call ui.card("Contracts") %}
+    {{ ui.table([("name", "Contract"), ("field", "Linked as")], contracts) }}
+  {% endcall %}
+{% endif %}
 {% if linked_from %}
   {% call ui.card("Linked from") %}
     {{ ui.table([("name", "Asset"), ("type", "Type"), ("field", "Linked as")], linked_from) }}

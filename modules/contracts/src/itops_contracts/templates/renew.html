@@ -1,0 +1,24 @@
+{% extends "core/shell.html" %}
+{% import "core/components.html" as ui %}
+{% block content %}
+{{ ui.breadcrumb([("Contracts", "/contracts/"), (contract.name, "/contracts/c/" ~ contract.id), ("Renew", None)]) }}
+{{ ui.page_header("Renew: " ~ contract.name, "The current term (" ~ term.starts_on ~ " to " ~ term.ends_on ~ ") is marked renewed and this one begins.") }}
+{% if error %}{{ ui.alert(error, "danger") }}{% endif %}
+<form method="post" action="/api/contracts/contracts/{{ contract.id }}/renew" class="stack">
+  {% call ui.card("Next term") %}
+  <div class="stack">
+    {{ ui.field("starts_on", "Starts", value=starts_on, type="date", required=True) }}
+    {{ ui.field("ends_on", "Ends", value=ends_on, type="date", required=True) }}
+    {% if can_costs %}
+    {{ ui.field("cost", "Cost", value=cost, help="The renewal price; filled in from the current term.") }}
+    {{ ui.select("cost_period", "Billing", periods, selected=cost_period) }}
+    {% endif %}
+    {{ ui.field("po_number", "PO number", value=po_number) }}
+    {{ ui.field("seats_bought", "Seats bought", value=seats_bought, type="number") }}
+    {{ ui.field("seats_in_use", "Seats in use", value=seats_in_use, type="number") }}
+    {{ ui.field("note", "Note (optional)", value=note, help="Shown in the history, e.g. \"3-year deal, 8% off\".") }}
+  </div>
+  {% endcall %}
+  <div class="actions">{{ ui.button("Renew", type="submit", variant="primary") }}{{ ui.button("Cancel", href="/contracts/c/" ~ contract.id) }}</div>
+</form>
+{% endblock %}

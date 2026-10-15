@@ -31,12 +31,16 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from itops.core import auth
 from itops.core.audit import AuditLog
 
-FieldKind = Literal["text", "longtext", "number", "date", "select", "url", "credential", "link"]
+FieldKind = Literal[
+    "text", "longtext", "number", "money", "date", "datetime", "select", "url", "credential", "link"
+]
 FIELD_KINDS: dict[str, str] = {
     "text": "One line of text",
     "longtext": "Several lines of text",
     "number": "A number",
+    "money": "An amount of money (2 decimals; one currency per deployment)",
     "date": "A date",
+    "datetime": "A date and time (as recorded, no time zone conversion)",
     "select": "A choice from a list (options)",
     "url": "A web address (http/https)",
     "credential": (
@@ -213,11 +217,25 @@ def slugify_key(name: str) -> str:
 
 # ---- values ----------------------------------------------------------------------------
 
+# 1Password names may contain spaces ("op://IT/Keyence service/password"), not at either end.
+_OP_PART = r"[^/\s](?:[^/\r\n]*[^/\s])?"
 CREDENTIAL_RE = re.compile(
-    r"^(op://[^\s/]+/[^\s/]+(/[^\s/]+){1,2}"  # op://vault/item[/section]/field
+    rf"^(op://{_OP_PART}/{_OP_PART}(/{_OP_PART}){{1,2}}"  # op://vault/item[/section]/field
     r"|https://([a-z0-9-]+\.)?1password\.(com|eu|ca)/\S+)$",  # a 1Password item link
     re.IGNORECASE,
 )
+
+
+def credential_ref(raw: Any, label: str = "Login") -> str:
+    """A 1Password reference (op://vault/item[/section]/field) or item link, stripped.
+    Anything else (a pasted password above all) raises TypeProblem."""
+    s = str(raw).strip()
+    if not CREDENTIAL_RE.match(s):
+        raise TypeProblem(
+            f"{label}: paste a 1Password reference (op://vault/item/field) or a 1Password "
+            "item link. Never the password or secret itself."
+        )
+    return s
 
 
 def _one(f: FieldDef, raw: Any) -> Any:
@@ -234,6 +252,23 @@ def _one(f: FieldDef, raw: Any) -> Any:
         except ValueError as exc:
             raise TypeProblem(f"{f.label}: not a number") from exc
         return int(n) if n.is_integer() else n
+    if f.kind == "money":
+        s = str(raw).replace(",", "").replace("$", "").strip()
+        negative = s.startswith("(") and s.endswith(")")  # accounting style: (12.50)
+        try:
+            n = round(float(s.strip("()")), 2)
+        except ValueError as exc:
+            raise TypeProblem(f"{f.label}: not an amount (like 1250.00)") from exc
+        n = -n if negative else n
+        return int(n) if n.is_integer() else n
+    if f.kind == "datetime":
+        try:
+            moment = dt.datetime.fromisoformat(str(raw).strip().replace(" ", "T", 1))
+        except ValueError as exc:
+            raise TypeProblem(f"{f.label}: use a date and time like 2026-12-31 14:30") from exc
+        return moment.replace(tzinfo=None, microsecond=0).isoformat(
+            timespec="minutes" if not moment.second else "seconds"
+        )
     if f.kind == "date":
         try:
             return dt.date.fromisoformat(str(raw).strip()[:10]).isoformat()
@@ -251,13 +286,7 @@ def _one(f: FieldDef, raw: Any) -> Any:
             raise TypeProblem(f"{f.label}: a web address starting with http:// or https://")
         return s
     if f.kind == "credential":
-        s = str(raw).strip()
-        if not CREDENTIAL_RE.match(s):
-            raise TypeProblem(
-                f"{f.label}: paste a 1Password reference (op://vault/item/field) or a 1Password "
-                "item link. Never the password or secret itself."
-            )
-        return s
+        return credential_ref(raw, f.label)
     # link: {"module": ..., "kind": ..., "id": ...} or "module:kind:id"
     if isinstance(raw, str):
         parts = raw.split(":", 2)

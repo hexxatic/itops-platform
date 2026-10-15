@@ -63,6 +63,10 @@ class Settings(BaseSettings):
     theme: str = ""
     # Run enabled connectors on their schedules (ADR 0010). Off: only manual runs.
     run_connectors: bool = True
+    # Run modules' scheduled jobs (ADR 0014). Off: they never run (tests, a second worker).
+    run_jobs: bool = True
+    # Re-index a module at startup when its module.search.version went up. Off for tests.
+    reindex_on_start: bool = True
     auth_mode: Literal["dev", "entra"] = "dev"
     entra_tenant_id: str = ""
     entra_client_id: str = ""
@@ -76,6 +80,11 @@ class Settings(BaseSettings):
             "admin": "App-ITOps-Admins",
         }
     )
+    # Permissions a module grants by AD group instead of by role (manifest `grant =
+    # "group"`, ADR 0014): permission -> group names (sAMAccountName), e.g.
+    # ITOPS_PERMISSION_GROUPS='{"contracts.read": ["App-ITOps-Contracts"]}'. A group-granted
+    # permission nobody is mapped to is held by admins only.
+    permission_groups: dict[str, list[str]] = Field(default_factory=dict[str, list[str]])
     # Signs the session cookie. Required outside development (dev makes a throwaway one).
     secret_key: SecretStr = SecretStr("")
     session_hours: int = 8
@@ -114,8 +123,15 @@ class Settings(BaseSettings):
     # Where the model files live. Downloaded once, then used offline. In production,
     # ship them with the release so the server never needs internet access.
     ai_models_dir: str = "./data/models"
-    # AI tier 3: embedded LLM. Off by default; enabled per feature ("helpdesk.triage").
-    ai_llm_provider: Literal["none"] = "none"
+    # AI tier 3: embedded LLM (ADR 0015). Off by default; enabled per feature
+    # ("contracts.suggest"). "openai" = any server speaking the OpenAI chat API on our own
+    # network (llama.cpp's llama-server, Ollama, ...): ITOPS_AI_LLM_URL is its base URL
+    # (".../v1" is added), ITOPS_AI_LLM_KEY its API key. Nothing is sent anywhere else.
+    ai_llm_provider: Literal["none", "openai"] = "none"
+    ai_llm_url: str = ""
+    ai_llm_key: SecretStr = SecretStr("")
+    ai_llm_model: str = "local"  # the model name to ask for (llama-server ignores it)
+    ai_llm_timeout_seconds: int = 600  # CPU models read a long document for minutes
     ai_llm_features: list[str] = Field(default_factory=list[str])
 
     @property

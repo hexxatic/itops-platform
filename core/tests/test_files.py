@@ -7,12 +7,13 @@ from contextlib import asynccontextmanager
 from pathlib import Path
 
 import httpx
+import pytest
 from _helpers import MakeModule
 
 from itops.core import auth
 from itops.core.app import create_app
 from itops.core.config import Settings
-from itops.sdk import Module
+from itops.sdk import FileRejected, Module
 
 PNG = (
     b"\x89PNG\r\n\x1a\n\x00\x00\x00\rIHDR\x00\x00\x00\x01\x00\x00\x00\x01\x08\x06\x00\x00"
@@ -111,6 +112,28 @@ async def test_claim_attaches_unclaimed_uploads(
             # Already claimed: a second claim (e.g. by another entity) does nothing.
             assert await mod.files.claim(s, [fid], entity_type="thing", entity_id="2") == 0
             await s.commit()
+
+
+async def test_copy_is_checked_like_a_download_and_shares_the_bytes(
+    make_module: MakeModule, database_url: str, tmp_path: Path
+) -> None:
+    mod = make_module("filemod", manifest_extra=PERMS, body=BODY)
+    async with running(database_url, tmp_path, mod) as c:
+        up = await c.post("/api/filemod/secret-files", files={"file": ("s.png", PNG, "image/png")})
+        fid = up.json()["id"]
+        auth.set_current(auth.Principal("bob", "Bob", frozenset({"filemod.read"})))
+        try:
+            with pytest.raises(FileRejected, match="you can read"):
+                await mod.files.copy(fid)
+        finally:
+            auth.set_current(None)
+        copy = await mod.files.copy(fid)  # the dev user may read it
+        assert copy.id != fid and copy.filename == "s.png" and copy.size_bytes == len(PNG)
+        assert len(list(tmp_path.rglob("*.png"))) == 1  # same bytes on disk
+        async with mod.session() as s:  # unclaimed, like an upload
+            assert await mod.files.claim(s, [copy.id], entity_type="thing", entity_id="9") == 1
+            await s.commit()
+        assert (await c.get(copy.url)).status_code == 200
 
 
 ATT_BODY = (

@@ -13,6 +13,7 @@ from __future__ import annotations
 import asyncio
 import warnings
 from collections.abc import Callable
+from dataclasses import replace
 from typing import Any, cast
 from urllib.parse import quote, urlsplit
 
@@ -22,7 +23,7 @@ from starlette.types import ASGIApp, Receive, Scope, Send
 
 from itops.core import auth
 from itops.core.config import Settings
-from itops.core.identity import Identity, User, roles_from_groups
+from itops.core.identity import Identity, User, group_names, roles_from_groups
 from itops.core.theme import parse_appearance
 
 # The MCP surface of ADR 0013: the endpoint, the OAuth endpoints and their discovery
@@ -104,7 +105,24 @@ class EntraAuth:
         claims: dict[str, Any] = result.get("id_token_claims") or {}
         raw_groups: list[Any] = claims.get("groups") or []
         groups = [str(g) for g in raw_groups]
+        overage: dict[str, Any] = claims.get("_claim_names") or {}
+        upn = str(claims.get("preferred_username", ""))
+        asked_ad = False
+        if not groups and "groups" in overage and self.identity.directory is not None:
+            # In too many groups for the token (Entra's limit is 200): ask AD about the
+            # ones that matter instead (role groups and restricted areas', ADR 0012).
+            answer = await self.identity.directory(upn, await self.identity.directory_groups())
+            groups = answer.groups
+            asked_ad = True
         roles = roles_from_groups(groups, self.settings.role_groups)
+        if roles and not asked_ad and self.identity.directory is not None:
+            # The token carries only groups synced to Entra *and* assigned to the app, so a
+            # permission group (ADR 0014) or an area's group (ADR 0012) missing either step
+            # silently didn't count (Contracts, 2026-10-14). Ask AD about those directly;
+            # if it can't answer, the token's groups stand.
+            answer = await self.identity.directory(upn, await self.identity.directory_groups())
+            if answer.status == "active":
+                groups = [*groups, *answer.groups]
         if not roles:
             await self.identity.record_refused(_user(claims, ()), groups)
             return self.message(
@@ -113,7 +131,7 @@ class EntraAuth:
                 "Ask an IT-Ops admin to add you to one of the IT-Ops groups "
                 f"({', '.join(self.settings.role_groups.values())}).",
             )
-        user = _user(claims, tuple(roles))
+        user = replace(_user(claims, tuple(roles)), groups=group_names(groups))
         appearance = await self.identity.record_sign_in(user)
         request.session["user"] = {
             "id": user.id,
@@ -238,7 +256,8 @@ class AuthGate:
                 return
             principal = self.identity.principal(user, via_ai=True, client="api")
         elif (user := session_user(scope)) is not None:
-            principal = self.identity.principal(user)
+            # The cookie holds who and their roles; their groups come from the user row.
+            principal = self.identity.principal(await self.identity.with_groups(user))
 
         if principal is None:
             if path.startswith("/api/") or request.method != "GET":

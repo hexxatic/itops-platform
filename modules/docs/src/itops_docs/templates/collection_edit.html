@@ -17,4 +17,5 @@
   </div>
 </form>
 {% endcall %}
+{% if access %}{% call ui.card("Who sees it") %}{{ ui.access_summary(access) }}{% endcall %}{% endif %}
 {% endblock %}

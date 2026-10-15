@@ -36,6 +36,10 @@
   {% call ui.card("Published fields") %}{{ ui.type_fields(view.published.definition) }}{% endcall %}
 {% endif %}
 
+{% if access %}
+  {% call ui.card("Who sees these records") %}{{ ui.access_summary(access) }}{% endcall %}
+{% endif %}
+
 {% call ui.disclosure("History (" ~ history|length ~ " version" ~ ("s" if history|length != 1) ~ ")") %}
   <ul class="activity">
   {% for v in history %}

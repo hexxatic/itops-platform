@@ -10,7 +10,7 @@ from sqlalchemy import func, select
 from itops.sdk import Principal
 from itops_docs import service
 from itops_docs.app import module
-from itops_docs.models import Document
+from itops_docs.models import Document, Version
 from itops_docs.service import DocsError
 
 
@@ -27,6 +27,43 @@ async def type_usage(type_key: str) -> int:
     async with module.session() as s:
         query = select(func.count()).select_from(Document).where(Document.type_key == type_key)
         return int(await s.scalar(query) or 0)
+
+
+@module.service("typed_documents")
+async def typed_documents(type_key: str) -> list[dict[str, Any]]:
+    """Every published or archived document of ``type_key``, for moving them elsewhere
+    (e.g. contracts into the contracts module, ADR 0014). Each: {id, title, status, url,
+    fields (the published values), attachments [{id, filename}]}. Drafts are left out:
+    nobody has published them. Collections the caller can't see are left out too."""
+    who = module.current_principal()
+    if who is None or not who.has("docs.read"):
+        return []
+    hidden = await service.hidden_collections()
+    async with module.session() as s:
+        docs = (
+            await s.execute(
+                select(Document).where(Document.type_key == type_key, Document.status != "draft")
+            )
+        ).scalars()
+        out: list[dict[str, Any]] = []
+        for doc in docs:
+            if doc.collection_id in hidden or doc.current_version_id is None:
+                continue
+            version = await s.get(Version, doc.current_version_id)
+            out.append(
+                {
+                    "id": str(doc.id),
+                    "title": doc.title,
+                    "status": doc.status,
+                    "url": f"/docs/d/{doc.slug}",
+                    "fields": service.version_fields(version),
+                    "attachments": [
+                        {"id": str(a["id"]), "filename": str(a["filename"])}
+                        for a in service.version_attachments(version)
+                    ],
+                }
+            )
+    return out
 
 
 @module.service("move_type")

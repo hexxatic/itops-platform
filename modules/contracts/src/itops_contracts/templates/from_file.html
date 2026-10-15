@@ -1,0 +1,69 @@
+{% extends "core/shell.html" %}
+{% import "core/components.html" as ui %}
+{% macro from_file(key) -%}
+{% set sg = found.get(key) %}
+{% if sg %}<blockquote class="suggestion-quote">“{{ sg.quote }}”</blockquote>{{ ui.show_in_document("doc-viewer", sg.page, sg.quote) }}{% endif %}
+{%- endmacro %}
+{% block head %}{% if not run.finished %}<meta http-equiv="refresh" content="5">{% endif %}{% endblock %}
+{% block content %}
+{{ ui.breadcrumb([("Contracts", "/contracts/"), ("New contract", "/contracts/new"), (run.filename, None)]) }}
+{{ ui.page_header("New contract from " ~ run.filename, "Check what the model found against the document, fix anything, then create the contract.") }}
+{% if error %}{{ ui.alert(error, "danger") }}{% endif %}
+
+{% if not run.finished %}
+  {% call ui.card() %}
+    {{ ui.progress("Reading " ~ run.filename ~ (" (waiting for another file first)" if run.status == "queued" else "")) }}
+    <p class="muted">A local AI model is reading the file; this usually takes one to three minutes. This page updates by itself.</p>
+  {% endcall %}
+{% elif run.status == "failed" %}
+  {{ ui.alert("Couldn't read the file: " ~ run.error, "danger") }}
+  <div class="actions">{{ ui.button("Fill it in yourself", href="/contracts/new", variant="primary") }}</div>
+{% elif run.status == "reviewed" %}
+  {{ ui.alert("A contract was already created from this file. Find it under Contracts.", "info") }}
+  <div class="actions">{{ ui.button("Contracts", href="/contracts/") }}</div>
+{% else %}
+  {% call(part) ui.review_layout() %}
+    {% if part == "main" %}
+    <form method="post" action="/api/contracts/from-file/{{ run.id }}" class="stack">
+      {% call ui.card("Contract") %}
+      {% if not found %}<p class="muted">Nothing in the file could be backed up by an exact quote, so nothing is filled in. Read the document and type it in.</p>{% endif %}
+      <div class="stack">
+        <div class="suggestion">{{ ui.field("name", "Name", value=v.name, required=True) }}{{ from_file("name") }}</div>
+        <div class="suggestion">{{ ui.field("vendor", "Vendor", value=v.vendor) }}{{ from_file("vendor") }}</div>
+        <div class="suggestion">{{ ui.select("category", "Category", categories, selected=category) }}{{ from_file("category") }}</div>
+        {{ ui.select("owner", "Owner", owners, selected=v.owner) }}
+        <div class="suggestion">{{ ui.checkbox("auto_renews", "Renews automatically unless cancelled", checked=auto_renews) }}{{ from_file("auto_renews") }}</div>
+        <div class="suggestion">
+          {{ ui.field("notice_days", "Notice period (days)", value=notice_days, type="number", help="Not filled in for you: models often pick up other day counts. Read the quote, and type the number only if it really is the notice period.") }}
+          {{ from_file("notice_days") }}
+        </div>
+        {{ ui.field("description", "Notes", value=v.description, type="textarea") }}
+      </div>
+      {% endcall %}
+      {% call ui.card("Current term") %}
+      <div class="stack">
+        <div class="suggestion">{{ ui.field("starts_on", "Starts", value=v.starts_on, type="date", required=True) }}{{ from_file("starts_on") }}</div>
+        <div class="suggestion">{{ ui.field("ends_on", "Ends", value=v.ends_on, type="date", required=True) }}{{ from_file("ends_on") }}</div>
+        {% if can_costs %}
+        <div class="suggestion">{{ ui.field("cost", "Cost", value=v.cost, help="In dollars, e.g. 1250.00.") }}{{ from_file("cost") }}</div>
+        <div class="suggestion">{{ ui.select("cost_period", "Billing", periods, selected=cost_period) }}{{ from_file("cost_period") }}</div>
+        {% endif %}
+        <div class="suggestion">{{ ui.field("po_number", "PO number", value=v.po_number) }}{{ from_file("po_number") }}</div>
+        <div class="suggestion">{{ ui.field("seats_bought", "Seats bought", value=v.seats_bought, type="number") }}{{ from_file("seats_bought") }}</div>
+        {{ ui.field("seats_in_use", "Seats in use", value=v.seats_in_use, type="number") }}
+      </div>
+      <p class="muted">{{ run.filename }} is saved on this term.</p>
+      {% endcall %}
+      <div class="actions">
+        {{ ui.button("Create the contract", type="submit", variant="primary") }}
+        {{ ui.button("Cancel", href="/contracts/") }}
+      </div>
+      {% if run.dropped %}<p class="muted">{{ run.dropped }} more answer(s) were left out: their quote wasn't in the file or didn't contain the value.</p>{% endif %}
+      <p class="muted">Read by {{ run.model or "a local model" }}. Nothing is saved until you create the contract.</p>
+    </form>
+    {% else %}
+      {{ ui.document_viewer(file, pages, id="doc-viewer") }}
+    {% endif %}
+  {% endcall %}
+{% endif %}
+{% endblock %}

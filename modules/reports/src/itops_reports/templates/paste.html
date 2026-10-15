@@ -1,0 +1,41 @@
+{% extends "core/shell.html" %}
+{% import "core/components.html" as ui %}
+{% block content %}
+{{ ui.breadcrumb([("Reports", "/reports/"), ("Datasets", "/reports/datasets"), (ds.title, "/reports/d/" ~ ds.key), ("Paste rows", None)]) }}
+{{ ui.page_header("Paste rows", ds.title) }}
+{% if error %}{{ ui.alert(error, "danger") }}{% endif %}
+
+{% if preview %}
+{% call ui.card("Check before saving") %}
+{% if preview.problems %}
+{% call ui.alert("", "danger") %}
+<strong>Fix these, then check again:</strong>
+<ul>{% for p in preview.problems[:20] %}<li>{{ p }}</li>{% endfor %}</ul>
+{% if preview.problems|length > 20 %}<p>And {{ preview.problems|length - 20 }} more.</p>{% endif %}
+{% endcall %}
+{% else %}
+<p>{{ preview.count }} row{{ "" if preview.count == 1 else "s" }} ready{% if preview.count > 50 %}; the first 50 are shown{% endif %}.</p>
+{% endif %}
+{{ ui.table(preview.columns, preview.rows, empty="No rows found.") }}
+{% if not preview.problems and preview.count %}
+<form method="post" action="/api/reports/d/{{ ds.key }}/paste">
+  <input type="hidden" name="step" value="save">
+  <textarea name="text" hidden>{{ text }}</textarea>
+  <div class="actions">{{ ui.button("Save " ~ preview.count ~ " rows", type="submit", variant="primary") }}</div>
+</form>
+{% endif %}
+{% endcall %}
+{% endif %}
+
+{% call ui.card("Rows from a spreadsheet") %}
+<p>Copy the cells in Excel, including a header row, and paste them here. Headers name the columns: {{ labels|join(", ") }}. They can be in any order; columns you leave out stay empty.</p>
+<form method="post" action="/api/reports/d/{{ ds.key }}/paste" class="stack">
+  <input type="hidden" name="step" value="preview">
+  {{ ui.field("text", "Rows", value=text, type="textarea") }}
+  <div class="actions">
+    {{ ui.button("Check", type="submit", variant="primary") }}
+    {{ ui.button("Cancel", href="/reports/d/" ~ ds.key, variant="ghost") }}
+  </div>
+</form>
+{% endcall %}
+{% endblock %}

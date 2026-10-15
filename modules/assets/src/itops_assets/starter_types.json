@@ -4,8 +4,8 @@
     "name": "Device",
     "description": "Servers, network gear, computers, printers and anything else with a network or serial number. The record's name is the device's name (usually its hostname).",
     "fields": [
-      {"key": "kind", "label": "Kind", "kind": "select", "options": ["Server", "Virtual machine", "Workstation", "Laptop", "Switch", "Firewall", "Router", "Access point", "Printer", "Phone", "UPS", "Storage", "Other"]},
-      {"key": "status", "label": "Status", "kind": "select", "options": ["Active", "Spare", "Inactive", "Retired"]},
+      {"key": "kind", "label": "Kind", "kind": "select", "options": ["Server", "Virtual machine", "Workstation", "Laptop", "Switch", "Firewall", "Router", "Access point", "Printer", "Phone", "UPS", "Storage", "Camera", "Industrial", "Other"]},
+      {"key": "status", "label": "Status", "kind": "select", "options": ["Active", "Spare", "Inactive", "Retired", "Unreviewed", "Ignored"], "help": "Unreviewed: found by a sync, waiting for a person. Ignored: not ours to track (left out of counts)."},
       {"key": "hostname", "label": "Hostname", "kind": "text"},
       {"key": "primary_ip", "label": "Primary IP", "kind": "text"},
       {"key": "default_gateway", "label": "Default gateway", "kind": "text"},
@@ -23,6 +23,21 @@
       {"key": "installed_on", "label": "Installed", "kind": "date"},
       {"key": "installed_by", "label": "Installed by", "kind": "text"},
       {"key": "warranty_expires", "label": "Warranty expires", "kind": "date"},
+      {"key": "last_seen", "label": "Last seen on the network", "kind": "date", "help": "The week an inventory scan last found it (from a sync)."},
+      {"key": "notes", "label": "Notes", "kind": "longtext"}
+    ]
+  },
+  {
+    "key": "monitor",
+    "name": "Monitor",
+    "description": "Displays and other peripherals counted in the device budget. The record's name is the model and serial number.",
+    "fields": [
+      {"key": "status", "label": "Status", "kind": "select", "options": ["Active", "Spare", "Retired"]},
+      {"key": "serial_number", "label": "Serial number", "kind": "text"},
+      {"key": "manufacturer", "label": "Manufacturer", "kind": "text"},
+      {"key": "model", "label": "Model", "kind": "text"},
+      {"key": "connected_to", "label": "Connected to", "kind": "link", "target": "assets.device"},
+      {"key": "purchased", "label": "Purchased", "kind": "date"},
       {"key": "notes", "label": "Notes", "kind": "longtext"}
     ]
   },

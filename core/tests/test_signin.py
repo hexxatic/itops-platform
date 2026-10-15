@@ -12,8 +12,11 @@ from typing import Any
 import httpx
 import pytest
 from itops_docs import module as docs
+from itops_docs import service as docs_service
 from pydantic import SecretStr
+from sqlalchemy import text
 
+from itops.core import auth
 from itops.core.app import create_app
 from itops.core.config import Settings
 from itops.core.entra import EntraAuth, _safe_next  # pyright: ignore[reportPrivateUsage]
@@ -97,6 +100,38 @@ def test_roles_grant_permissions_by_last_word() -> None:
     assert "docs.publish" in permissions_for(["publisher"], declared)
     assert permissions_for(["admin"], declared) == {"*"}
     assert permissions_for([], declared) == frozenset()
+
+
+def test_group_granted_permissions_come_from_groups_not_roles() -> None:
+    declared = ["docs.read", "contracts.read", "contracts.approve"]
+    grants = {
+        "contracts.read": frozenset({"app-itops-contracts"}),
+        "contracts.approve": frozenset(),  # nobody configured: admins only
+    }
+    # A publisher outside the group doesn't get contracts.read from their role...
+    assert permissions_for(["publisher"], declared, group_grants=grants) == {"docs.read"}
+    # ...a reader in the group does (domain prefix and case don't matter).
+    held = permissions_for(
+        ["reader"], declared, groups=["CORP\\App-ITOps-Contracts"], group_grants=grants
+    )
+    assert held == {"docs.read", "contracts.read"}
+    # The group alone, without any role, grants nothing (no role: no IT-Ops at all).
+    assert (
+        permissions_for([], declared, groups=["app-itops-contracts"], group_grants=grants) == set()
+    )
+    assert permissions_for(["admin"], declared, group_grants=grants) == {"*"}
+
+
+def test_identity_reports_unmapped_group_permissions() -> None:
+    from itops.core.identity import Identity
+
+    identity = Identity(None)  # type: ignore[arg-type]  # no database needed here
+    identity.permission_groups = {"contracts.read": ["App-ITOps-Contracts"], "old.perm": ["X"]}
+    problems = identity.set_declared_permissions(
+        ["contracts.read", "contracts.approve"], ["contracts.read", "contracts.approve"]
+    )
+    assert any("contracts.approve" in p and "admins only" in p for p in problems)
+    assert any("old.perm" in p for p in problems)
 
 
 @pytest.mark.parametrize("target", ["//evil.example/x", "https://evil.example", "", None])
@@ -302,3 +337,105 @@ async def test_reverse_proxy_host_is_trusted_from_loopback_only(database_url: st
             r = await c.get("/docs/", headers=proxied)
             assert r.status_code == 307  # header ignored: redirected to the public name
             assert r.headers["location"] == f"{BASE}/docs/"
+
+
+async def test_sign_in_asks_ad_about_groups_the_token_left_out(
+    database_url: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """ADR 0014: the token carries only groups assigned to the Entra app. A permission group
+    that isn't still counts at sign-in, because AD is asked about it; if AD can't answer,
+    the token's groups stand and sign-in still works."""
+    from itops.core.directory import DirectoryAnswer
+
+    asked: list[tuple[str, list[str]]] = []
+    answers = [DirectoryAnswer("active", ["App-ITOps-Editors", "App-ITOps-Contracts"])]
+
+    async def directory(upn: str, groups: list[str]) -> DirectoryAnswer:
+        asked.append((upn, groups))
+        return answers[0]
+
+    settings = Settings(
+        _env_file=None,  # pyright: ignore[reportCallIssue]
+        database_url_override=database_url,
+        auth_mode="entra",
+        entra_tenant_id="tenant",
+        entra_client_id="client",
+        entra_client_secret=SecretStr("secret"),
+        directory_check=False,
+        permission_groups={"docs.publish": ["App-ITOps-Contracts"]},
+    )
+    fake = FakeMsal(["App-ITOps-Editors"])  # no App-ITOps-Contracts in the token
+    monkeypatch.setattr(EntraAuth, "_app", lambda self: fake)  # pyright: ignore[reportUnknownLambdaType]
+    app = create_app(settings, modules=[docs])
+    app.state.identity.directory = directory
+    async with app.router.lifespan_context(app):
+        transport = httpx.ASGITransport(app=app)
+        async with httpx.AsyncClient(transport=transport, base_url=BASE) as client:
+            await sign_in(client)
+            assert asked and asked[0][0] == fake.oid[:8] + "@example.com"
+            assert "App-ITOps-Contracts" in asked[0][1]
+            async with app.state.runtime.sessionmaker() as s:
+                stored = (
+                    await s.execute(
+                        text("SELECT group_names FROM itops.users WHERE id = :u"),
+                        {"u": fake.oid},
+                    )
+                ).scalar()
+            assert stored == "app-itops-contracts,app-itops-editors"
+
+            await client.get("/auth/logout")
+            answers[0] = DirectoryAnswer("error")  # AD down: the token's groups stand
+            r = await sign_in(client)
+            assert r.status_code == 303
+            async with app.state.runtime.sessionmaker() as s:
+                stored = (
+                    await s.execute(
+                        text("SELECT group_names FROM itops.users WHERE id = :u"),
+                        {"u": fake.oid},
+                    )
+                ).scalar()
+            assert stored == "app-itops-editors"
+
+
+async def test_sign_in_keeps_the_groups_restricted_areas_need(
+    database_url: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """ADR 0012: groups from the token are kept on the user row; a collection restricted to
+    a group shows to its members only."""
+    member = FakeMsal(["App-ITOps-Editors", "CORP\App-ITOps-Security"])
+    other = FakeMsal(["App-ITOps-Editors"])
+    async with running(database_url) as client:
+        app: Any = client._transport.app  # type: ignore[attr-defined]  # pyright: ignore
+        runtime = app.state.runtime
+        name = f"Security {uuid.uuid4().hex[:6]}"
+        auth.set_current(auth.Principal("admin@example.com", "Admin", frozenset({auth.ALL})))
+        try:
+            async with docs.session() as s:
+                col = await docs_service.create_collection(s, name=name)
+                await s.commit()
+            await runtime.areas.set(
+                "docs", "collection", str(col.id), name=name,
+                groups=["App-ITOps-Security"], no_ai=False,
+            )  # fmt: skip
+        finally:
+            auth.set_current(None)
+        try:
+            monkeypatch.setattr(EntraAuth, "_app", lambda self: member)  # pyright: ignore[reportUnknownLambdaType]
+            await sign_in(client)
+            assert name in (await client.get("/docs/")).text
+            async with runtime.sessionmaker() as s:
+                stored = (
+                    await s.execute(
+                        text("SELECT group_names FROM itops.users WHERE id = :u"),
+                        {"u": member.oid},
+                    )
+                ).scalar()
+            assert stored == "app-itops-editors,app-itops-security"
+            await client.get("/auth/logout")
+            monkeypatch.setattr(EntraAuth, "_app", lambda self: other)  # pyright: ignore[reportUnknownLambdaType]
+            await sign_in(client)
+            assert name not in (await client.get("/docs/")).text
+        finally:
+            async with runtime.sessionmaker() as s:
+                await s.execute(text("DELETE FROM itops.area_restrictions"))
+                await s.commit()

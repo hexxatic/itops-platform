@@ -211,6 +211,10 @@ def _mount_module(
                 "history": history,
                 "activity": activity,
                 "can_approve": can_approve(),
+                # Who sees records of this type, when the module's areas are its types.
+                "access": await runtime.areas.access(auth.current(), module, "type", key)
+                if "type" in runtime.areas.kinds.get(module, {})
+                else None,
                 "error": request.query_params.get("error"),
                 "notice": request.query_params.get("notice"),
             },

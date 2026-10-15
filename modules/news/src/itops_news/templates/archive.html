@@ -1,0 +1,9 @@
+{% extends "core/shell.html" %}
+{% import "core/components.html" as ui %}
+{% block content %}
+{{ ui.breadcrumb([("News", "/news/"), ("Archive", None)]) }}
+{{ ui.page_header("Archived news", "Posts taken off the news page. Nothing is deleted.") }}
+{% call ui.card() %}
+{{ ui.table([("title", "Title"), ("category", "Kind"), ("published", "Published")], rows, empty="Nothing archived.") }}
+{% endcall %}
+{% endblock %}

@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import datetime as dt
 import hashlib
+import mimetypes
 from collections.abc import Callable
 from dataclasses import dataclass
 from importlib import resources
@@ -29,6 +30,7 @@ from jinja2 import (
 
 from itops.core import auth
 from itops.core.audit import Entry
+from itops.core.charts import chart_layout, money, number
 from itops.core.config import Settings
 from itops.core.release import release_version
 from itops.core.theme import Theme, current_appearance
@@ -76,6 +78,9 @@ def build_templates(
         theme_version=theme.version() if theme else "",
     )
     env.filters["filesize"] = filesize
+    env.filters["money"] = money
+    env.filters["number"] = number
+    template_globals["chart_layout"] = chart_layout
     return Jinja2Templates(env=env)
 
 
@@ -120,6 +125,9 @@ def _page_endpoint(templates: Jinja2Templates, mod: Module, page: PageSpec) -> A
 
 
 def mount_ui(app: FastAPI, templates: Jinja2Templates, modules: list[Module]) -> None:
+    # Windows' registry can map .mjs to text/plain; browsers refuse ES modules served so
+    # (the vendored PDF.js is .mjs).
+    mimetypes.add_type("text/javascript", ".mjs")
     app.mount("/static", StaticFiles(packages=[("itops", "static")]), name="static")
 
     for mod in modules:

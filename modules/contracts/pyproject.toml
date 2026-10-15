@@ -1,0 +1,19 @@
+[project]
+name = "itops-contracts"
+version = "0.1.0"
+description = "Contracts module for IT-Ops."
+requires-python = ">=3.12"
+dependencies = ["itops-core"]
+
+[project.entry-points."itops.modules"]
+contracts = "itops_contracts:module"
+
+[tool.uv.sources]
+itops-core = { workspace = true }
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/itops_contracts"]

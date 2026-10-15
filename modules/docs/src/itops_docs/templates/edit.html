@@ -32,6 +32,7 @@
   {% endif %}
   {{ ui.section_editor("content", content, "/api/docs/files") }}
   {% call ui.card("Attachments") %}{{ ui.attachment_editor(attachments, max_mb=max_attachment_mb) }}{% endcall %}
+  {% call ui.card("Logins") %}{{ ui.login_editor(logins) }}{% endcall %}
   <div class="actions">{{ ui.button("Create draft", type="submit", variant="primary") }}{{ ui.button("Cancel", href="/docs/") }}</div>
 </form>
 {% else %}
@@ -41,6 +42,7 @@
   {% endif %}
   {{ ui.section_editor("content", content, "/api/docs/files") }}
   {% call ui.card("Attachments") %}{{ ui.attachment_editor(attachments, max_mb=max_attachment_mb) }}{% endcall %}
+  {% call ui.card("Logins") %}{{ ui.login_editor(logins) }}{% endcall %}
   {{ ui.field("change_note", "What changed?", value=change_note, help="Optional, shown in the history.") }}
   <div class="actions">{{ ui.button("Save draft", type="submit", variant="primary") }}{{ ui.button("Cancel", href="/docs/d/" ~ doc.slug) }}</div>
 </form>

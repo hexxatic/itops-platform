@@ -16,6 +16,10 @@ Browser pages and AI tools both call these functions, so the rules live here onc
   Drafts may leave required fields empty; publishing needs them filled. Published values
   are indexed in docs.document_fields (queryable) and in search (not credential fields).
 
+**Restricted collections** (ADR 0012): a collection is an area. Everything in one the
+viewer can't see is left out of every read here (lists, counts, lookups, links, search)
+and can't be written to: pages answer 404, tools say it doesn't exist.
+
 Callers pass a session and commit.
 """
 
@@ -33,7 +37,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from itops.sdk import Principal
 from itops.sdk.content import Content, Passage, normalize, passages
-from itops.sdk.types import TypeDef, TypeProblem, TypeView
+from itops.sdk.types import TypeDef, TypeProblem, TypeView, credential_ref
 from itops_docs.app import module
 from itops_docs.models import Collection, Document, DocumentField, DocumentTag, Version, utcnow
 
@@ -125,6 +129,38 @@ def version_attachments(version: Version | None) -> list[dict[str, Any]]:
     return items
 
 
+def version_logins(version: Version | None) -> list[dict[str, str]]:
+    """The version's logins: [{label, ref}], each ref a 1Password reference or link."""
+    if version is None or not version.logins:
+        return []
+    items: list[dict[str, str]] = json.loads(version.logins)
+    return items
+
+
+MAX_LOGINS = 30
+
+
+def clean_logins(items: list[dict[str, Any]]) -> list[dict[str, str]]:
+    """Check logins before they're saved: every ref must be a 1Password reference or item
+    link (never the secret itself); a row with neither label nor ref is dropped and a ref
+    without a label is called "Login"."""
+    out: list[dict[str, str]] = []
+    for item in items:
+        label = " ".join(str(item.get("label") or "").split())[:200]
+        ref = str(item.get("ref") or "").strip()
+        if not label and not ref:
+            continue
+        if not ref:
+            raise DocsError(f"{label}: paste its 1Password reference or link.")
+        try:
+            out.append({"label": label or "Login", "ref": credential_ref(ref, label or "Login")})
+        except TypeProblem as exc:
+            raise DocsError(str(exc)) from exc
+    if len(out) > MAX_LOGINS:
+        raise DocsError(f"At most {MAX_LOGINS} logins per document.")
+    return out
+
+
 def version_fields(version: Version | None) -> dict[str, Any]:
     if version is None or not version.fields:
         return {}
@@ -158,8 +194,10 @@ async def _new_version(
     who: Principal,
     fields: dict[str, Any] | None = None,
     attachments: list[dict[str, Any]] | None = None,
+    logins: list[dict[str, Any]] | None = None,
 ) -> Version:
-    """``fields`` / ``attachments`` None keep the previous version's (content-only edits)."""
+    """``fields`` / ``attachments`` / ``logins`` None keep the previous version's
+    (content-only edits)."""
     content = normalize(content)
     # A typed document's fields can be its whole content (a Vendor record); a plain
     # document needs at least one section.
@@ -170,12 +208,14 @@ async def _new_version(
         fields = version_fields(latest)
     if attachments is None:
         attachments = version_attachments(latest)
+    logins = version_logins(latest) if logins is None else clean_logins(logins)
     version = Version(
         document_id=doc.id,
         version_number=(latest.version_number + 1) if latest else 1,
         content=content.model_dump_json(),
         fields=json.dumps(fields) if fields else None,
         attachments=json.dumps(attachments) if attachments else None,
+        logins=json.dumps(logins) if logins else None,
         change_note=note.strip()[:500],
         author_user=who.user,
         author_via_ai=who.via_ai,
@@ -192,24 +232,39 @@ async def _new_version(
 # ---- reads --------------------------------------------------------------------------
 
 
+async def hidden_collections() -> frozenset[int]:
+    """Collections the current viewer can't see (ADR 0012); usually none."""
+    return frozenset(int(k) for k in await module.areas.hidden("collection"))
+
+
+async def collection_visible(s: AsyncSession, collection_id: int) -> Collection | None:
+    """The collection, if it exists and the viewer can see it."""
+    col = await s.get(Collection, collection_id)
+    return col if col is not None and col.id not in await hidden_collections() else None
+
+
 async def collections(s: AsyncSession) -> list[tuple[Collection, int]]:
-    """Collections with their count of non-archived documents."""
+    """Collections the viewer can see, with their count of non-archived documents."""
     counts = (
         select(Document.collection_id, func.count().label("n"))
         .where(Document.status != "archived")
         .group_by(Document.collection_id)
         .subquery()
     )
-    rows = await s.execute(
+    q = (
         select(Collection, func.coalesce(counts.c.n, 0))
         .outerjoin(counts, counts.c.collection_id == Collection.id)
         .order_by(Collection.sort_order, Collection.name)
     )
+    if hidden := await hidden_collections():
+        q = q.where(Collection.id.not_in(hidden))
+    rows = await s.execute(q)
     return [(c, int(n)) for c, n in rows.all()]
 
 
 async def collection_by_slug(s: AsyncSession, slug: str) -> Collection | None:
-    return (await s.execute(select(Collection).where(Collection.slug == slug))).scalar_one_or_none()
+    col = (await s.execute(select(Collection).where(Collection.slug == slug))).scalar_one_or_none()
+    return col if col is not None and col.id not in await hidden_collections() else None
 
 
 async def documents(
@@ -221,6 +276,8 @@ async def documents(
     limit: int = 200,
 ) -> list[Document]:
     q = select(Document).order_by(Document.updated_at.desc()).limit(limit)
+    if hidden := await hidden_collections():
+        q = q.where(Document.collection_id.not_in(hidden))
     if collection_id is not None:
         q = q.where(Document.collection_id == collection_id)
     if status:
@@ -240,7 +297,9 @@ async def slugs_by_id(s: AsyncSession, ids: list[str]) -> dict[str, str]:
 
 
 async def by_slug(s: AsyncSession, slug: str) -> Document | None:
-    return (await s.execute(select(Document).where(Document.slug == slug))).scalar_one_or_none()
+    """The document, unless it's in a collection the viewer can't see."""
+    doc = (await s.execute(select(Document).where(Document.slug == slug))).scalar_one_or_none()
+    return doc if doc is not None and doc.collection_id not in await hidden_collections() else None
 
 
 async def tags(s: AsyncSession, doc_id: uuid.UUID) -> list[str]:
@@ -297,6 +356,7 @@ async def create(
     type_key: str | None = None,
     fields: dict[str, Any] | None = None,
     attachments: list[dict[str, Any]] | None = None,
+    logins: list[dict[str, Any]] | None = None,
 ) -> Document:
     """A new document as a draft (version 1). Readers don't see it until published.
     With ``type_key``, ``fields`` are checked against that type (required ones may still
@@ -304,7 +364,7 @@ async def create(
     title = " ".join(title.split())[:300]
     if not title:
         raise DocsError("Give the document a title.")
-    if await s.get(Collection, collection_id) is None:
+    if await collection_visible(s, collection_id) is None:
         raise DocsError("Pick a collection.")
     values: dict[str, Any] = {}
     if type_key:
@@ -322,7 +382,7 @@ async def create(
     )
     s.add(doc)
     await s.flush()
-    await _new_version(s, doc, content, "Created", who, values, attachments or [])
+    await _new_version(s, doc, content, "Created", who, values, attachments or [], logins or [])
     await _set_tags(s, doc.id, tags or [])
     await _audit(s, doc, "created", "Created as a draft")
     return doc
@@ -349,23 +409,31 @@ async def save(
     note: str = "",
     fields: dict[str, Any] | None = None,
     attachments: list[dict[str, Any]] | None = None,
+    logins: list[dict[str, Any]] | None = None,
 ) -> Version:
     """Save edits as a new draft version. What readers see doesn't change. ``fields``
-    None keeps the current field values; a dict replaces them (checked against the type)."""
+    None keeps the current field values; a dict replaces them (checked against the type).
+    ``logins`` likewise: None keeps them, a list replaces them."""
     if doc.status == "archived":
         raise DocsError("This document is archived. Restore it before editing.")
     if fields is not None:
         if not doc.type_key:
             raise DocsError("This document has no type, so it has no fields.")
         fields = await _validated(doc.type_key, fields, require=False)
-    before = {str(a["id"]) for a in version_attachments(await _latest(s, doc.id))}
-    version = await _new_version(s, doc, content, note or "Edited", who, fields, attachments)
+    latest = await _latest(s, doc.id)
+    before = {str(a["id"]) for a in version_attachments(latest)}
+    logins_before = version_logins(latest)
+    version = await _new_version(
+        s, doc, content, note or "Edited", who, fields, attachments, logins
+    )
     after = {str(a["id"]) for a in version_attachments(version)}
     summary = f"Saved draft version {version.version_number}" + (f": {note}" if note else "")
     if added := len(after - before):
         summary += f"; added {added} attachment(s)"
     if removed := len(before - after):
         summary += f"; removed {removed} attachment(s)"
+    if version_logins(version) != logins_before:
+        summary += "; changed logins"
     await _audit(s, doc, "edited", summary, version=version.version_number)
     return version
 
@@ -393,7 +461,7 @@ async def update_details(
     title = " ".join(title.split())[:300]
     if not title:
         raise DocsError("Give the document a title.")
-    if await s.get(Collection, collection_id) is None:
+    if await collection_visible(s, collection_id) is None:
         raise DocsError("Pick a collection.")
     changed: dict[str, Any] = {}
     if title != doc.title:
@@ -451,9 +519,11 @@ async def _index(s: AsyncSession, doc: Document) -> None:
     if version is None:
         return
     extra = await _index_fields(s, doc, version)
-    names = [str(a["filename"]) for a in version_attachments(version)]
-    if names:
-        extra.append(Passage(label="Attachments", anchor="attachments", text=", ".join(names)))
+    files = version_attachments(version)
+    if files:
+        names = ", ".join(str(a["filename"]) for a in files)
+        extra.append(Passage(label="Attachments", anchor="attachments", text=names))
+    extra += await attachment_passages(s, files, anchor="attachments")
     await module.search.index(
         s,
         kind="document",
@@ -463,7 +533,29 @@ async def _index(s: AsyncSession, doc: Document) -> None:
         passages=[*extra, *passages(Content.model_validate_json(version.content))],
         read_permission="docs.read",
         archived=doc.status == "archived",
+        area=("collection", str(doc.collection_id)),
     )
+
+
+ATTACHMENT_TEXT_LIMIT = 400_000  # characters of attachment text indexed per document
+
+
+async def attachment_passages(
+    s: AsyncSession, files: list[dict[str, Any]], *, anchor: str | None
+) -> list[Passage]:
+    """What the attached files say, one passage per page ("Schedule.pdf, page 2"), so
+    search finds a document by its attachments' contents (ADR 0015)."""
+    out: list[Passage] = []
+    budget = ATTACHMENT_TEXT_LIMIT
+    for a in files:
+        pages = await module.files.text(str(a["id"]), session=s)
+        for n, text in enumerate(pages, start=1):
+            if not text.strip() or budget <= 0:
+                continue
+            label = f"{a['filename']}, page {n}" if len(pages) > 1 else str(a["filename"])
+            out.append(Passage(label=label, anchor=anchor, text=text[:budget]))
+            budget -= len(text)
+    return out
 
 
 def field_text(value: Any) -> str:
@@ -499,7 +591,7 @@ async def _index_fields(s: AsyncSession, doc: Document, version: Version) -> lis
             )  # fmt: skip
             if f.kind == "date":
                 row.value_date = dt.date.fromisoformat(str(item))
-            elif f.kind == "number":
+            elif f.kind in ("number", "money"):
                 row.value_number = float(item)
             s.add(row)
         if f.kind != "credential":
@@ -509,13 +601,17 @@ async def _index_fields(s: AsyncSession, doc: Document, version: Version) -> lis
     return [Passage(label="Details", anchor=None, text="\n".join(lines))]
 
 
+module.search.version = 2  # 2: attachment contents, by page (ADR 0015)
+
+
 @module.search.reindexer
 async def reindex_all() -> int:
     """Rebuild every document's search entries (``itops search rebuild``)."""
     count = 0
     async with module.session() as s:
-        for doc in (await s.execute(select(Document))).scalars().unique():
+        for doc in list((await s.execute(select(Document))).scalars().unique()):
             await _index(s, doc)
+            await s.commit()  # one document at a time: never one long transaction
             count += doc.status != "draft"
         await s.commit()
     return count
@@ -707,6 +803,7 @@ async def delete_collection(s: AsyncSession, col: Collection, *, move_to: int | 
         )
         for doc in docs:
             doc.collection_id = target.id
+            await _index(s, doc)  # search knows which collection (area) it's in
         await s.flush()
     summary = f"Deleted collection “{col.name}”"
     if target:
@@ -735,6 +832,11 @@ def _link_ref(doc: Document) -> dict[str, str]:
     return {"id": str(doc.id), "kind": "document", "name": doc.title, "url": f"/docs/d/{doc.slug}"}
 
 
+def _restricted_ref(doc: Document) -> dict[str, str]:
+    """A linked document the viewer can't see: no title, no address (ADR 0012)."""
+    return {"id": str(doc.id), "kind": "document", "restricted": "1"}
+
+
 @module.service("lookup")
 async def lookup(
     *,
@@ -748,6 +850,7 @@ async def lookup(
     nothing (documents are the only kind Docs links to)."""
     if kind not in (None, "document"):
         return []
+    hidden = await hidden_collections()
     async with module.session() as s:
         q = select(Document)
         if ids is not None:
@@ -758,27 +861,31 @@ async def lookup(
         else:
             q = q.where(Document.status != "archived").order_by(Document.title)
             q = q.limit(max(1, min(limit, 500)))
+            if hidden:
+                q = q.where(Document.collection_id.not_in(hidden))
             if query.strip():
                 q = q.where(Document.title.like(f"%{query.strip()}%"))
         docs = list((await s.execute(q)).scalars().unique())
-    return [_link_ref(d) for d in docs]
+    # By id (a link someone made): one the viewer can't see shows as "Restricted".
+    return [_restricted_ref(d) if d.collection_id in hidden else _link_ref(d) for d in docs]
 
 
 @module.service("related")
 async def related(link: str, limit: int = 50) -> list[dict[str, str]]:
     """Published documents whose fields link to ``link`` ("module:kind:id", e.g. an asset).
     Each: {id, kind, name, url, field} (field = the label of the linking field)."""
+    q = (
+        select(Document, DocumentField.field_key)
+        .join(DocumentField, DocumentField.document_id == Document.id)
+        .where(DocumentField.kind == "link", DocumentField.value_text == link)
+        .where(Document.status == "published")
+        .order_by(Document.title)
+        .limit(max(1, min(limit, 200)))
+    )
+    if hidden := await hidden_collections():
+        q = q.where(Document.collection_id.not_in(hidden))
     async with module.session() as s:
-        rows = (
-            await s.execute(
-                select(Document, DocumentField.field_key)
-                .join(DocumentField, DocumentField.document_id == Document.id)
-                .where(DocumentField.kind == "link", DocumentField.value_text == link)
-                .where(Document.status == "published")
-                .order_by(Document.title)
-                .limit(max(1, min(limit, 200)))
-            )
-        ).all()
+        rows = (await s.execute(q)).all()
     labels: dict[tuple[str, str], str] = {}
     out: list[dict[str, str]] = []
     for doc, field_key in rows:
@@ -791,6 +898,39 @@ async def related(link: str, limit: int = 50) -> list[dict[str, str]]:
                 pass
         out.append({**_link_ref(doc), "field": str(labels.get((type_key, field_key), field_key))})
     return out
+
+
+@module.service("describe_area")
+async def describe_area(kind: str, key: str) -> dict[str, str] | None:
+    """A collection's name and its edit page, for the core access page (ADR 0012)."""
+    if kind != "collection" or not key.isdigit():
+        return None
+    async with module.session() as s:
+        col = await s.get(Collection, int(key))
+    return {"name": col.name, "url": f"/docs/collections/{col.slug}/edit"} if col else None
+
+
+@module.service("area_entities")
+async def area_entities(kind: str, key: str) -> dict[str, Any]:
+    """The documents in a collection, as search entries (a new restriction marks them)."""
+    if kind != "collection" or not key.isdigit():
+        return {"kind": "document", "ids": []}
+    async with module.session() as s:
+        ids = await s.execute(select(Document.id).where(Document.collection_id == int(key)))
+        return {"kind": "document", "ids": [str(i) for i in ids.scalars()]}
+
+
+@module.service("visible_entity")
+async def visible_entity(entity_type: str, entity_id: str) -> bool:
+    """May the viewer see what a file belongs to (its document's collection)? /files asks."""
+    if entity_type != "document":
+        return True
+    wanted = _parse_ids([entity_id])
+    if not wanted:
+        return False
+    async with module.session() as s:
+        doc = await s.get(Document, wanted[0])
+    return doc is not None and doc.collection_id not in await hidden_collections()
 
 
 @module.service("link_targets")
