@@ -9,7 +9,7 @@ Datasets and the dashboards built on them (ADR 0016). A dataset is a table of ro
 typed columns, written either by a connector (synced) or by people (typed in, or pasted from
 a spreadsheet). A report is a dataset narrowed by fixed filters and shown as tiles, a trend
 chart, breakdowns and a detail list people can drill into and download as Excel or CSV.
-Not the place for forecasting logic (the planned `budget` module, ADR 0016, does that, reading datasets here),
+Not the place for forecasting logic (the `budget` module, ADR 0016, does that, reading datasets here),
 and not a search index (rows aren't in search).
 
 ## Contract (keep in sync with `src/itops_reports/manifest.toml`)
@@ -22,7 +22,7 @@ and not a search index (rows aren't in search).
 - **Areas (ADR 0012):** `dataset` and `report` (keys are their keys). A hidden dataset hides
   its reports.
 - **Events published:** `reports.rows_changed` (people changed rows of a typed-in dataset)
-- **Services provided:** `reports.ensure_dataset` (a connector creates its synced dataset if
+- **Services provided:** `reports.waiting` (core's *Waiting for you*), `reports.aggregate_dataset` (permission-checked counts and groups over all matching rows, without the detail read cap), `reports.ensure_dataset` (a connector creates its synced dataset if
   missing; leaves an existing one alone), `reports.upsert` (connectors only: one row by the
   source's key) and `reports.upsert_many` (a bounded page in one transaction; returns outcome
   counts; a rejected page writes nothing); both need `owns = { "reports.rows" = ["*"] }`,
@@ -66,6 +66,6 @@ and not a search index (rows aren't in search).
   creates or rejects them. Rows proposed for a proposed dataset wait (`dataset_id` NULL,
   `dataset_proposal_id` set), move to the dataset when it's created and are rejected with it.
 - Code layout: `app.py` (the Module object), `models.py`, `engine.py` (definitions and
-  evaluation), `service.py` (rules, services, the job), `views.py`, `tools.py`.
+  evaluation), `service.py` (rules, services, the job), `aggregate.py` (SQL summaries of large datasets), `views.py`, `tools.py`.
 
 

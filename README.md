@@ -36,8 +36,18 @@ without writing any of it.
   own AI client (Claude, or anything that speaks MCP). Each call runs as that user via
   AI, so human-only permissions are refused and tools that change data produce drafts
   for review.
+- Visibility. An admin can restrict part of a module (a Docs collection, an asset type)
+  to AD groups, keep it out of AI connections, or both. This only narrows what roles
+  already allow.
+- AI suggestions from files. A model you host, off by default, reads an uploaded file and
+  suggests field values. Each one has to quote the file and its value has to appear in
+  that quote, or it's dropped. A person reviews what's left before it becomes data.
+- App tokens. Another internal app can read the REST API as itself, with read-only
+  permissions an admin chose. Tokens are shown once, stored as a hash, expire within a
+  year, and issuing or revoking one is audited.
 - Files, forms, theming, and a design page (`/_design`) so modules look identical
-  without shipping their own CSS or JS.
+  without shipping their own CSS or JS. Text from uploaded PDF, Word, Excel and Outlook
+  files is extracted so search and AI suggestions can read it.
 
 ## Modules in this repo
 
@@ -83,7 +93,9 @@ by number and carry the reasoning.
 ## Scope
 
 This is an export of the generic part of a larger internal repository. Company-specific
-modules, connectors, configuration and deployment are left out. It runs and the tests
-pass. Treat it as a reference and a starting point, not a supported product.
+modules, connectors and configuration are left out. `tools/deploy` has the Windows deploy
+scripts, but the settings file they read is private, so you'd need to write your own. It
+runs and the tests pass. Treat it as a reference and a starting point, not a supported
+product.
 
 Exported 2026-10-29 from `dae31c6`.

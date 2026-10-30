@@ -19,7 +19,7 @@ customers, leases), not purchasing or invoicing.
 - **Events published:** `contracts.renewal_due` (120/90/60/30 days before cancel-by),
   `contracts.renewal_overdue` (weekly past cancel-by), `contracts.renewed`,
   `contracts.cancelled`. Meant for `notify` (email reminders) once it exists.
-- **Services provided:** `contracts.lookup`, `contracts.related`, `contracts.link_targets`,
+- **Services provided:** `contracts.waiting` (core's *Waiting for you*), `contracts.lookup`, `contracts.related`, `contracts.link_targets`,
   `contracts.upsert` (connector runs: creates a contract once, copies its files; never
   overwrites later edits)
 - **Jobs:** `renewals` (daily 06:00): marks terms due, publishes the reminders, marks ended

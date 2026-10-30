@@ -16,7 +16,7 @@ doesn't send email or notifications (there's no notify module yet).
   drafts), `news.publish` (**human-only**: publish, change published posts, pin, archive,
   restore, delete drafts)
 - **Events published:** `news.post_published`
-- **Services provided:** none
+- **Services provided:** `news.waiting` (core's *Waiting for you*)
 - **MCP tools:** `news_list_posts`, `news_get_post` (read); `news_draft_post`,
   `news_update_draft` (`news.write`; drafts only)
 - **Depends on:** core only

@@ -13,22 +13,27 @@ in its text).
 
 ## Contract (keep in sync with `src/itops_docs/manifest.toml`)
 
-- **Permissions:** `docs.read`, `docs.write`, `docs.publish` (**human-only**: publish,
+- **Permissions:** `docs.read`, `docs.howto` (everyone who can sign in: files of documents
+  shown on the help site), `docs.write`, `docs.publish` (**human-only**: publish,
   discard, archive, restore), `docs.types.draft` + `docs.types.approve` (**human-only**):
   document types (ADR 0008), admin-only by construction, `docs.collections.manage`
   (**human-only**, admin-only): create, rename, reorder, delete collections (deleting
   moves any documents to another collection first; nothing is deleted with it)
 - **Areas (ADR 0012):** `collection` (keys are collection ids). Admins restrict a collection
   to AD groups or keep it out of AI on core's access page (the **Who sees it** card on its
-  edit page).
-- **Events published:** `docs.document_published`, `docs.document_archived`
-- **Services provided:** `docs.lookup` (documents for link pickers and labels),
+  edit page). `audience` (ADR 0028): an audience restricted to groups shows its help-site
+  documents only to them.
+- **Events published:** `docs.document_published`, `docs.document_archived`,
+  `docs.collection_changed`, `docs.help_site_changed`
+- **Services provided:** `docs.waiting` (core's *Waiting for you*), `docs.lookup` (documents for link pickers and labels),
   `docs.related` (published documents whose fields link to a record), `docs.link_targets`;
   for connectors (ADR 0010, `sync.py`): `docs.ensure_collections`, `docs.source_status`,
   `docs.save_file`, `docs.upsert`; for retiring a document type (`retire.py`):
   `docs.type_usage`, `docs.move_type`, `docs.archive_type`, `docs.typed_documents` (a type's
   published documents with values and files, for moving them to another module); for areas: `docs.describe_area`,
-  `docs.area_entities`, `docs.visible_entity` (core's `/files` asks it about a document's files)
+  `docs.area_entities`, `docs.visible_entity` (core's `/files` asks it about a document's files); for the help site
+  (ADR 0027): `docs.howto_collections`, `docs.howtos`, `docs.howto`, `docs.howto_index`,
+  `docs.shared_file_permission`
 - **MCP tools:** `docs_list_collections`, `docs_list_documents` (`status="pending"`: new
   drafts and published documents with unpublished edits, as on Docs' home), `docs_search`,
   `docs_get_document` (read); `docs_create_document`, `docs_update_document` (`docs.write`;

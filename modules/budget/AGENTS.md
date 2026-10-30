@@ -19,7 +19,7 @@ up. Not purchasing, invoicing or approvals of individual purchases.
   `budget.approve` (**human-only**: mark a saved version adopted; approve or reject
   proposed changes)
 - **Events published:** `budget.version_adopted`
-- **Services provided:** `budget.dashboards` (listed on the Reports page for people with
+- **Services provided:** `budget.waiting` (core's *Waiting for you*), `budget.dashboards` (listed on the Reports page for people with
   `budget.read`)
 - **MCP tools:** `budget_forecast_counts` (counts, rates and gaps; the forecast's amounts
   stay on the page), `budget_list_prices`, `budget_get_assumptions`, `budget_list_proposals`

@@ -24,7 +24,7 @@ references only).
   the type's page); core's type tools filter restricted types too
 - **Events published:** `assets.record_created`, `assets.record_updated`,
   `assets.record_deleted`
-- **Services provided:** `assets.lookup` (records for link pickers and labels:
+- **Services provided:** `assets.waiting` (core's *Waiting for you*), `assets.lookup` (records for link pickers and labels:
   `lookup(ids=...)` or `lookup(kind=..., query=...)` → [{id, kind, name, url}]),
   `assets.related` (assets whose fields link to a record), `assets.link_targets`,
   `assets.upsert` (connectors only, ADR 0010: create or update from a source record;
