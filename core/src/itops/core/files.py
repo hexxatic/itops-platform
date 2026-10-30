@@ -103,16 +103,37 @@ class FileRow:
 
 
 VisibleEntity = Callable[..., Awaitable[bool]]
+SharedPermission = Callable[..., Awaitable[str | None]]
 READER_VERSION = 1  # bump when core/extract.py reads something better: cached text is re-read
 
 
-async def may_read(
-    row: FileRow, principal: auth.Principal | None, visible: VisibleEntity | None
+async def holds_permission(
+    row: FileRow, principal: auth.Principal | None, shared: SharedPermission | None
 ) -> bool:
-    """Whether ``principal`` may read the file: its read permission, and, if it belongs to an
-    entity, that the owning module's ``visible_entity`` service lets them see it (ADR 0012).
-    Downloads (``/files``) and copies (``module.files.copy``) both ask this."""
-    if principal is None or not principal.has(row.read_permission):
+    """Whether ``principal`` holds the file's read permission, or the one more permission the
+    owning module's ``shared_file_permission`` service opens its entity's files to (Docs:
+    everyone, for a how-to published for end users; ADR 0027)."""
+    if principal is None:
+        return False
+    if principal.has(row.read_permission):
+        return True
+    if shared is None or not (row.entity_type and row.entity_id):
+        return False
+    extra = await shared(entity_type=row.entity_type, entity_id=row.entity_id)
+    return bool(extra) and principal.has(str(extra))
+
+
+async def may_read(
+    row: FileRow,
+    principal: auth.Principal | None,
+    visible: VisibleEntity | None,
+    shared: SharedPermission | None = None,
+) -> bool:
+    """Whether ``principal`` may read the file: its read permission (or the one its entity is
+    shared with), and, if it belongs to an entity, that the owning module's
+    ``visible_entity`` service lets them see it (ADR 0012). Downloads (``/files``) and
+    copies (``module.files.copy``) both ask this."""
+    if not await holds_permission(row, principal, shared):
         return False
     if row.entity_type and row.entity_id and visible is not None:
         return bool(await visible(entity_type=row.entity_type, entity_id=row.entity_id))

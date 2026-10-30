@@ -404,6 +404,18 @@ class SuggestionRunner:
             )
             return [_run(r) for r in rows.all()]
 
+    async def to_review(self, module: str, user: str) -> list[SuggestionRun]:
+        """``user``'s finished runs nobody has reviewed yet, newest first."""
+        async with self._maker()() as s:
+            rows = await s.execute(
+                text(
+                    f"SELECT TOP 50 {_COLUMNS} FROM itops.ai_runs WHERE module = :m"
+                    " AND created_by = :u AND status = 'done' ORDER BY id DESC"
+                ),
+                {"m": module, "u": user},
+            )
+            return [_run(r) for r in rows.all()]
+
     async def reviewed(self, run_id: int, *, accepted: dict[str, Any], by: str) -> None:
         """Record what a person accepted (key -> the value saved, which may differ)."""
         async with self._maker()() as s:

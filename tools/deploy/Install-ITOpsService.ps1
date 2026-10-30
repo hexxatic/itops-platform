@@ -96,7 +96,9 @@ if (Test-Path $envFile) {
     [Security.Cryptography.RandomNumberGenerator]::Create().GetBytes($bytes)   # works on 5.1 and 7
     $secretKey = [Convert]::ToBase64String($bytes)
     $clientSecret = if ($EntraClientSecret) { [Net.NetworkCredential]::new('', $EntraClientSecret).Password } else { '' }
-    $hosts = ConvertTo-Json -Compress @($e.Hostname, '127.0.0.1', '127.0.0.1:*', 'localhost', 'localhost:*')
+    $hosts = ConvertTo-Json -Compress @(@($e.Hostname, $e.HelpHostname, '127.0.0.1', '127.0.0.1:*', 'localhost', 'localhost:*') | Where-Object { $_ })
+    # The help site (ADR 0027): anyone in the tenant signs in to it as staff.
+    $sites = if ($e.HelpHostname) { ConvertTo-Json -Compress @{ help = @{ url = "https://$($e.HelpHostname)"; title = 'IT Help' } } } else { '{}' }
     $permissionGroups = if ($settings.PermissionGroups) { ConvertTo-Json -Compress $settings.PermissionGroups } else { '{}' }
     @(
         "# IT-Ops $Environment. Read by the service at startup (restart it after edits). Secrets: never copy this file elsewhere."
@@ -115,6 +117,8 @@ if (Test-Path $envFile) {
         "ITOPS_ENTRA_CLIENT_SECRET=$clientSecret"
         "ITOPS_SECRET_KEY=$secretKey"
         "ITOPS_PERMISSION_GROUPS=$permissionGroups"
+        "ITOPS_SITES=$sites"
+        'ITOPS_ROLE_GROUPS={"staff": "*", "reader": "App-ITOps-Readers", "editor": "App-ITOps-Editors", "publisher": "App-ITOps-Publishers", "admin": "App-ITOps-Admins"}'
     ) | Set-Content -Path $envFile -Encoding utf8
     Remove-Variable secretKey, clientSecret
     $acl = New-Object Security.AccessControl.FileSecurity

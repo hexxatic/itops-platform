@@ -1,0 +1,23 @@
+{% extends "core/shell.html" %}
+{% import "core/components.html" as ui %}
+{% block content %}
+{% call ui.page_header("Device budget", "Computers and peripherals for next year, and a five-year plan, worked out from Assets, HR history, purchase history and the price list. Every line says what it rests on.") %}
+  {% if can_write %}{{ ui.button("Assumptions and prices", href="/budget/assumptions") }}{% endif %}
+{% endcall %}
+{% if error %}{{ ui.alert(error, "danger") }}{% endif %}
+{% if waiting %}{% call ui.alert("", "info") %}{{ waiting }} proposed change{{ "s are" if waiting != 1 else " is" }} waiting for approval: <a href="/budget/proposals">Proposed changes</a>.{% endcall %}{% endif %}
+
+{% set download = None %}
+{% include "budget/parts.html" %}
+
+{% call ui.card("Saved versions") %}
+<p class="muted" id="versions">A saved version freezes today's figures and assumptions so they can be explained later. Actual spend is shown against it.</p>
+{{ ui.table([("title", "Version"), ("status", "Status"), ("total", "Total"), ("by", "Saved by"), ("when", "When"), ("summary", ""), ("delete", "")], versions, empty="No saved versions yet.") }}
+{% if can_write %}
+<form method="post" action="/api/budget/versions">
+  <div class="grid">{{ ui.field("title", "Name", "", required=True, help="e.g. FY27 proposal") }}</div>
+  <div class="actions">{{ ui.button("Save this forecast", type="submit", variant="primary") }}</div>
+</form>
+{% endif %}
+{% endcall %}
+{% endblock %}

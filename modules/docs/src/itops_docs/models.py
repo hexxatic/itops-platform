@@ -33,6 +33,17 @@ class Collection(Base):
     sort_order: Mapped[int] = mapped_column(Integer, default=0)
 
 
+class Audience(Base):
+    """Who a help-site document is for (ADR 0028): an area admins restrict to AD groups."""
+
+    __tablename__ = "audiences"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    name: Mapped[str] = mapped_column(Unicode(200))
+    description: Mapped[str] = mapped_column(Unicode(1000), default="")
+    sort_order: Mapped[int] = mapped_column(Integer, default=0)
+
+
 class Document(Base):
     __tablename__ = "documents"
 
@@ -50,6 +61,9 @@ class Document(Base):
     created_by: Mapped[str] = mapped_column(Unicode(200))
     created_at: Mapped[dt.datetime] = mapped_column(DateTime, default=lambda: utcnow())
     updated_at: Mapped[dt.datetime] = mapped_column(DateTime, default=lambda: utcnow())
+    # Shown on the help site while published (ADR 0028); no audience means everyone.
+    help_site: Mapped[bool] = mapped_column(Boolean, default=False)
+    audience_id: Mapped[int | None] = mapped_column(ForeignKey("docs.audiences.id"), default=None)
 
     collection: Mapped[Collection] = relationship(lazy="joined")
 

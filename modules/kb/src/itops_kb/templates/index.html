@@ -1,0 +1,24 @@
+{% extends "core/shell.html" %}
+{% import "core/components.html" as ui %}
+{% block content %}
+{% call ui.page_header("How-tos", "Step-by-step help from IT, for the things people ask about most.") %}
+  {% if can_review %}{{ ui.button("What people said", href="/kb/feedback") }}{% endif %}
+{% endcall %}
+{{ ui.search_box(action="/kb/", value=query, placeholder="What do you need help with?", live=True) }}
+{{ ui.search_results(hits, query) }}
+
+{% if not query %}
+  {% if not groups %}
+    {{ ui.empty_state("No how-tos yet", "IT hasn't published any here yet. If you need help now, contact IT.") }}
+  {% else %}
+    {% if chosen %}
+      {{ ui.breadcrumb([("How-tos", "/kb/"), (chosen, None)]) }}
+    {% elif collections|length > 1 %}
+      {% call ui.card("Topics") %}{{ ui.link_list(collections) }}{% endcall %}
+    {% endif %}
+    {% for g in groups %}
+      {% call ui.card(g.name) %}{{ ui.link_list(g.articles) }}{% endcall %}
+    {% endfor %}
+  {% endif %}
+{% endif %}
+{% endblock %}

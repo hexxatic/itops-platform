@@ -5,8 +5,10 @@
 {% call ui.page_header(contract.name, contract.vendor) %}
   {% if contract.status == "draft" %}
     {% if can_approve %}
-      {{ ui.action_button("Accept", "/api/contracts/contracts/" ~ contract.id ~ "/accept", variant="primary") }}
-      {{ ui.action_button("Discard", "/api/contracts/contracts/" ~ contract.id ~ "/discard", variant="danger",
+      {#- The stamp of the draft on screen: a change saved after the page loaded is refused. -#}
+      {% set reviewed = "?reviewed=" ~ stamp|urlencode %}
+      {{ ui.action_button("Accept", "/api/contracts/contracts/" ~ contract.id ~ "/accept" ~ reviewed, variant="primary") }}
+      {{ ui.action_button("Discard", "/api/contracts/contracts/" ~ contract.id ~ "/discard" ~ reviewed, variant="danger",
                           confirm="Throw away this drafted contract?") }}
     {% endif %}
     {% if can_write %}{{ ui.button("Edit", href="/contracts/c/" ~ contract.id ~ "/edit") }}{% endif %}
@@ -49,6 +51,19 @@
 {% if can_write %}<div class="actions">{{ ui.button("Edit term", href="/contracts/t/" ~ term.id ~ "/edit") }}</div>{% endif %}
 {% else %}<p class="muted">No term yet.</p>{% endif %}
 {% endcall %}
+
+{% if proposals %}
+  {{ ui.alert("Proposed costs are waiting: check them against the contract, then apply or reject each.", "info") }}
+  {% set back = "" %}
+  {% include "contracts/proposals_list.html" %}
+{% endif %}
+
+{% if term and can_costs and rates %}
+{% call ui.card("Rates") %}
+<p class="muted">What the current term charges for each one used, and how many a month it includes.</p>
+{{ ui.table([("item", "Charged for"), ("price", "Price each"), ("included", "Included a month")], rates) }}
+{% endcall %}
+{% endif %}
 
 {% if undecided and can_approve %}
 {% call ui.disclosure("Not renewing?") %}

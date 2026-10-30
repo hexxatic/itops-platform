@@ -1,15 +1,16 @@
 name = "reports"
-version = "0.1.0"
+version = "0.7.0"
 title = "Reports"
+nav_order = 50
 description = "Datasets written by connectors or typed in, and dashboards built on them: tiles, charts, breakdowns and a detail list you can download as Excel or CSV."
 requires = ["core>=0.1"]
-optional = []
-provides = ["upsert", "ensure_dataset", "rows", "describe_area", "area_entities"]
+optional = ["budget", "assets"]
+provides = ["upsert", "upsert_many", "ensure_dataset", "rows", "read_dataset", "aggregate_dataset", "describe_area", "area_entities", "waiting"]
 
 [permissions]
 "reports.read" = "View reports and datasets"
-"reports.write" = "Add, change and delete rows in typed-in datasets (every change is audited); AI may draft reports"
-"reports.publish" = { description = "Create and change datasets and reports, publish AI-drafted reports (admins)", human_only = true }
+"reports.write" = "Add, change and delete rows in typed-in datasets (every change is audited); AI may draft reports and propose rows and datasets"
+"reports.publish" = { description = "Create and change datasets and reports, publish AI-drafted reports, add AI-proposed rows and create AI-proposed datasets (admins)", human_only = true }
 "reports.costs" = { description = "See money columns in reports and datasets (never shown to AI connections)", grant = "group" }
 "reports.types.draft" = "Draft dataset column types (admins; AI may draft)"
 "reports.types.approve" = { description = "Publish, retire and restore dataset column types (admins)", human_only = true }
@@ -27,3 +28,4 @@ title = "Report data retention"
 description = "Deletes rows older than each dataset's retention period."
 schedule = "daily 03:30"
 permissions = ["reports.read", "reports.write"]
+

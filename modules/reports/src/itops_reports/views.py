@@ -93,11 +93,36 @@ async def _report_or_404(s: Any, key: str) -> tuple[Definition, Dataset]:
 # ---- reports ---
 
 
+# Modules that provide a `dashboards` service ([{title, url, description}], only what the
+# viewer may see) are listed with the reports (ADR 0016); each is in the manifest's optional.
+DASHBOARD_MODULES = {"budget": "Budget", "assets": "Assets"}
+
+
+async def _dashboards() -> list[dict[str, Any]]:
+    out: list[dict[str, Any]] = []
+    for name, title in DASHBOARD_MODULES.items():
+        fn = module.services.get(f"{name}.dashboards")
+        if fn is None:
+            continue
+        for d in await fn():
+            out.append(
+                {
+                    "title": d["title"],
+                    "href": d["url"],
+                    "description": d.get("description", ""),
+                    "dataset": title,
+                }
+            )
+    return out
+
+
 @module.page("/", template="index.html", title="Reports", nav="Reports", permission="reports.read")
 async def home(request: Request) -> dict[str, Any]:
     publisher = _can("reports.publish")
     async with module.session() as s:
         found = await service.definitions(s, drafts=publisher)
+        waiting = await service.proposals(s) if publisher else []
+        new_datasets = await service.dataset_proposals(s) if publisher else []
     published = [(d, ds) for d, ds in found if d.config is not None]
     drafts = [(d, ds) for d, ds in found if d.draft_config]
     return {
@@ -109,7 +134,8 @@ async def home(request: Request) -> dict[str, Any]:
                 "dataset": ds.title,
             }
             for d, ds in published
-        ],
+        ]
+        + await _dashboards(),
         "drafts": [
             {
                 "report": {"text": d.title, "href": f"/reports/r/{d.key}?draft=1"},
@@ -119,8 +145,33 @@ async def home(request: Request) -> dict[str, Any]:
             for d, _ in drafts
         ],
         "can_publish": publisher,
+        "can_manage_types": _can("reports.types.draft"),
+        "proposed": _waiting(waiting),
+        "proposed_datasets": [
+            {
+                "dataset": {
+                    "text": service.dataset_spec(dp).title,
+                    "href": "/reports/datasets#proposals",
+                },
+                "note": dp.note,
+                "by": dp.proposed_by,
+            }
+            for dp in new_datasets
+        ],
         "error": request.query_params.get("error"),
     }
+
+
+def _waiting(found: list[tuple[Any, Dataset]]) -> list[dict[str, Any]]:
+    return [
+        {
+            "dataset": {"text": ds.title, "href": f"/reports/d/{ds.key}#proposals"},
+            "rows": number(p.row_count),
+            "by": p.proposed_by,
+            "note": p.note,
+        }
+        for p, ds in found
+    ]
 
 
 def _drills(request: Request) -> list[Filter]:
@@ -277,6 +328,7 @@ async def report_page(request: Request) -> dict[str, Any]:
         "draft": ctx["draft"],
         "has_draft": bool(d.draft_config),
         "draft_by": d.draft_by,
+        "stamp": service.stamp(d),
         "can_publish": _can("reports.publish"),
         "access": access,
         "error": request.query_params.get("error"),
@@ -523,12 +575,14 @@ async def update_report(request: Request, key: str, user: CanPublish) -> Redirec
     return RedirectResponse(f"/reports/r/{key}", status_code=303)
 
 
+# Publish and discard send back the stamp the draft view showed (``?reviewed=``), so a
+# draft changed after the page loaded (by an AI connection, say) is refused, not acted on.
 @module.router.post("/r/{key}/publish")
-async def publish_report(key: str, user: CanPublish) -> RedirectResponse:
+async def publish_report(key: str, user: CanPublish, reviewed: str) -> RedirectResponse:
     try:
         async with module.session() as s:
             d, ds = await _report_or_404(s, key)
-            await service.publish_draft(s, d, ds)
+            await service.publish_draft(s, d, ds, reviewed=reviewed)
             await s.commit()
     except (ReportsError, ValueError) as exc:
         return _back(f"/reports/r/{key}?draft=1", str(exc))
@@ -536,11 +590,14 @@ async def publish_report(key: str, user: CanPublish) -> RedirectResponse:
 
 
 @module.router.post("/r/{key}/discard")
-async def discard_report(key: str, user: CanPublish) -> RedirectResponse:
-    async with module.session() as s:
-        d, _ = await _report_or_404(s, key)
-        gone = await service.discard_draft(s, d)
-        await s.commit()
+async def discard_report(key: str, user: CanPublish, reviewed: str) -> RedirectResponse:
+    try:
+        async with module.session() as s:
+            d, _ = await _report_or_404(s, key)
+            gone = await service.discard_draft(s, d, reviewed=reviewed)
+            await s.commit()
+    except ReportsError as exc:
+        return _back(f"/reports/r/{key}?draft=1", str(exc))
     return _back("/reports/" if gone else f"/reports/r/{key}")
 
 
@@ -561,6 +618,7 @@ async def datasets_page(request: Request) -> dict[str, Any]:
     async with module.session() as s:
         found = await service.datasets(s)
         counts = await service.row_counts(s)
+        proposed = await _dataset_proposal_cards(s)
     return {
         "datasets": [
             {
@@ -572,8 +630,56 @@ async def datasets_page(request: Request) -> dict[str, Any]:
             for d in found
         ],
         "can_publish": _can("reports.publish"),
+        "proposals": proposed,
         "error": request.query_params.get("error"),
     }
+
+
+async def _dataset_proposal_cards(s: Any) -> list[dict[str, Any]]:
+    waiting: dict[int, list[Any]] = {}
+    for rp, dp in await service.rows_waiting(s):
+        waiting.setdefault(dp.id, []).append(rp)
+    cards: list[dict[str, Any]] = []
+    for dp in await service.dataset_proposals(s):
+        spec = service.dataset_spec(dp)
+        view = await module.types.get(spec.type_key)
+        definition = view.published.definition if view and view.published else None
+        fields = {f.key: f.label for f in definition.fields} if definition else {}
+        batches = waiting.get(dp.id, [])
+        cards.append(
+            {
+                "id": dp.id,
+                "title": spec.title,
+                "note": dp.note,
+                "by": dp.proposed_by,
+                "when": dp.proposed_at.strftime("%d %b %Y %H:%M UTC"),
+                "rows": [
+                    {"field": "Key", "value": dp.key},
+                    {
+                        "field": "Column type",
+                        "value": definition.name if definition else spec.type_key,
+                    },
+                    {"field": "Where rows come from", "value": MODES["manual"]},
+                    {
+                        "field": "Time column",
+                        "value": fields.get(spec.time_field or "", spec.time_field or "None"),
+                    },
+                    {
+                        "field": "Rows are kept",
+                        "value": f"{spec.retention_days} days"
+                        if spec.retention_days
+                        else "Everything",
+                    },
+                ]
+                + (
+                    [{"field": "Description", "value": spec.description}]
+                    if spec.description
+                    else []
+                ),
+                "waiting_rows": sum(b.row_count for b in batches),
+            }
+        )
+    return cards
 
 
 @module.page("/d/{key}", template="dataset.html", title="Dataset", permission="reports.read")
@@ -583,6 +689,7 @@ async def dataset_page(request: Request) -> dict[str, Any]:
         cols = await service.columns(ds)
         page = await service.rows_page(s, ds)
         total = await service.count(s, ds)
+        proposed = await _proposal_cards(s, ds, cols)
     editable = ds.mode == "manual" and _can("reports.write")
     columns = [(f.key, f.label) for f in cols.visible]
     rows: list[dict[str, Any]] = []
@@ -604,12 +711,39 @@ async def dataset_page(request: Request) -> dict[str, Any]:
         "editable": editable,
         "can_publish": _can("reports.publish"),
         "hidden_money": bool(cols.hidden),
+        "proposals": proposed,
+        "can_review": _can("reports.publish"),
         "time_label": _label(cols, ds.time_field) if ds.time_field else None,
         "access": access,
         "history": await module.audit.history(kind="dataset", entity_id=ds.key, limit=20),
         "error": request.query_params.get("error"),
         "export_url": f"/api/reports/d/{ds.key}/export",
     }
+
+
+async def _proposal_cards(s: Any, ds: Dataset, cols: service.Columns) -> list[dict[str, Any]]:
+    """Pending proposals for the dataset page: a preview of the rows (money only for those who
+    may see it), how many are already in the dataset, and whether this viewer can approve."""
+    cards: list[dict[str, Any]] = []
+    for p, _ in await service.proposals(s, ds):
+        rows = service.proposed_rows(p)
+        keys = [f.key for f in cols.visible if any(r.get(f.key) not in (None, "") for r in rows)]
+        kinds = {f.key: f.kind for f in cols.visible}
+        money = await service.has_money(ds, p)
+        cards.append(
+            {
+                "id": p.id,
+                "count": p.row_count,
+                "note": p.note,
+                "by": p.proposed_by,
+                "when": p.proposed_at.strftime("%d %b %Y %H:%M UTC"),
+                "columns": [(k, _label(cols, k)) for k in keys],
+                "rows": [{k: display(kinds[k], r.get(k)) for k in keys} for r in rows[:50]],
+                "duplicates": await service.already_in(s, ds, rows),
+                "money_hidden": money and bool(cols.hidden),
+            }
+        )
+    return cards
 
 
 @module.router.get("/d/{key}/export")
@@ -865,3 +999,64 @@ async def paste_rows(
     except ReportsError as exc:
         return await module.forms.back(request, f"/reports/d/{key}/paste?preview=1", str(exc))
     return _back(f"/reports/d/{key}?added={n}")
+
+
+async def _proposal_or_404(s: Any, key: str, proposal_id: int) -> tuple[Any, Dataset]:
+    found = await service.get_proposal(s, proposal_id)
+    if found is None or found[1].key != key:
+        raise HTTPException(status_code=404, detail="Proposal not found")
+    return found
+
+
+@module.router.post("/d/{key}/proposals/{proposal_id}/approve")
+async def approve_rows(key: str, proposal_id: int, user: CanPublish) -> RedirectResponse:
+    try:
+        async with module.session() as s:
+            p, ds = await _proposal_or_404(s, key, proposal_id)
+            n = await service.approve_proposal(s, p, ds)
+            await s.commit()
+    except ReportsError as exc:
+        return _back(f"/reports/d/{key}", str(exc))
+    return _back(f"/reports/d/{key}?added={n}")
+
+
+@module.router.post("/d/{key}/proposals/{proposal_id}/reject")
+async def reject_rows(key: str, proposal_id: int, user: CanPublish) -> RedirectResponse:
+    try:
+        async with module.session() as s:
+            p, ds = await _proposal_or_404(s, key, proposal_id)
+            await service.reject_proposal(s, p, ds)
+            await s.commit()
+    except ReportsError as exc:
+        return _back(f"/reports/d/{key}", str(exc))
+    return _back(f"/reports/d/{key}")
+
+
+async def _dataset_proposal_or_404(s: Any, proposal_id: int) -> Any:
+    found = await service.get_dataset_proposal(s, proposal_id)
+    if found is None:
+        raise HTTPException(status_code=404, detail="Proposal not found")
+    return found
+
+
+@module.router.post("/dataset-proposals/{proposal_id}/approve")
+async def approve_dataset(proposal_id: int, user: CanPublish) -> RedirectResponse:
+    try:
+        async with module.session() as s:
+            ds = await service.approve_dataset(s, await _dataset_proposal_or_404(s, proposal_id))
+            key = ds.key
+            await s.commit()
+    except ReportsError as exc:
+        return _back("/reports/datasets", str(exc))
+    return _back(f"/reports/d/{key}")
+
+
+@module.router.post("/dataset-proposals/{proposal_id}/reject")
+async def reject_dataset(proposal_id: int, user: CanPublish) -> RedirectResponse:
+    try:
+        async with module.session() as s:
+            await service.reject_dataset(s, await _dataset_proposal_or_404(s, proposal_id))
+            await s.commit()
+    except ReportsError as exc:
+        return _back("/reports/datasets", str(exc))
+    return _back("/reports/datasets")

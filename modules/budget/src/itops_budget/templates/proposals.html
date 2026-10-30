@@ -1,0 +1,12 @@
+{% extends "core/shell.html" %}
+{% import "core/components.html" as ui %}
+{% block content %}
+{{ ui.breadcrumb([("Budget", "/budget/"), ("Proposed changes", None)]) }}
+{{ ui.page_header("Proposed changes", "Prices and assumptions AI proposed. Nothing changes until someone who adopts budget versions approves it.") }}
+{% if error %}{{ ui.alert(error, "danger") }}{% endif %}
+{% if proposals %}
+  {% include "budget/proposals_list.html" %}
+{% else %}
+  {{ ui.empty_state("Nothing waiting.", "Proposals from AI tools show up here for approval.") }}
+{% endif %}
+{% endblock %}

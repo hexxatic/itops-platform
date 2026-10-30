@@ -9,6 +9,7 @@ from pathlib import Path
 
 import httpx
 from itops_assets import module, service
+from itops_assets.models import Proposal
 from sqlalchemy import text
 
 from itops.sdk import Principal
@@ -78,7 +79,7 @@ async def test_create_list_search_edit_delete(database_url: str, tmp_path: Path)
         assert f'href="/assets/r/{plant}"' in page  # the link shows as the location's name
 
         listing = (await c.get("/assets/t/device")).text
-        assert "DB-SRV01" in listing and "192.0.2.15" in listing
+        assert "DB-SRV01" in listing  # Devices: its own list (devices.py), no IP column
         await c.post(
             "/api/assets/records",
             data={
@@ -171,7 +172,7 @@ async def test_proposals_queue(database_url: str, tmp_path: Path) -> None:
             await s.commit()
             new_id, change_id, existing_id = new.id, change.id, existing.id
 
-        assert "2 proposed changes" in (await c.get("/assets/")).text
+        assert "2 proposed asset changes to approve" in (await c.get("/")).text  # Waiting for you
         queue = (await c.get("/assets/proposals")).text
         assert "New domain: example.org" in queue and "from WHOIS" in queue
         assert "Change to example.net" in queue and "Cloudflare" in queue
@@ -193,6 +194,65 @@ async def test_proposals_queue(database_url: str, tmp_path: Path) -> None:
         assert "already%20decided" in r.headers["location"]
         with acting_as(AI):
             assert (await c.post(f"/api/assets/proposals/{change_id}/approve")).status_code == 403
+
+
+async def test_an_approved_change_applies_only_what_it_proposed(
+    database_url: str, tmp_path: Path
+) -> None:
+    """What changed between proposing and approving stays: approving a model change doesn't
+    put back the status the device had when it was proposed (AD syncs status, ADR 0024)."""
+    async with running(database_url, tmp_path) as c:
+        async with module.session() as s:
+            with acting_as(PERSON):
+                values = {"status": "Active", "model": "M1", "manufacturer": "Contoso"}
+                device = await service.create(s, PERSON, type_key="device", name="HOST01",
+                                              fields=values)  # fmt: skip
+            change = await service.propose(s, AI, record=device, name="HOST02",
+                                           fields={"model": "M2", "manufacturer": None},
+                                           note="from the invoice")  # fmt: skip
+            await s.commit()
+            assert service.proposal_fields(change) == {"model": "M2", "manufacturer": None}
+            with acting_as(PERSON):
+                values = service.record_fields(device) | {"status": "Retired"}
+                await service.update(s, PERSON, device, name=device.name, fields=values)
+            await s.commit()
+            change_id, device_id = change.id, device.id
+
+        queue = (await c.get("/assets/proposals")).text
+        assert "Change to HOST01" in queue and "M2" in queue and "HOST02" in queue
+        assert "Retired" not in queue  # only the fields it changes
+
+        await c.post(f"/api/assets/proposals/{change_id}/approve")
+        async with module.session() as s:
+            device = await service.get(s, device_id)
+            assert device is not None and device.name == "HOST02"
+            assert service.record_fields(device) == {"status": "Retired", "model": "M2"}
+
+
+async def test_a_change_proposed_as_a_whole_copy_isnt_applied(
+    database_url: str, tmp_path: Path
+) -> None:
+    """Proposals from before held the whole record as it was: approving one is refused."""
+    async with running(database_url, tmp_path) as c:
+        async with module.session() as s:
+            with acting_as(PERSON):
+                device = await service.create(s, PERSON, type_key="device", name="HOST01",
+                                              fields={"status": "Retired"})  # fmt: skip
+            old = Proposal(record_id=device.id, type_key="device", name="HOST01",
+                           fields='{"status": "Active", "model": "M2"}', proposed_by=AI.user,
+                           proposed_via_ai=True)  # fmt: skip
+            s.add(old)
+            await s.commit()
+            old_id, device_id = old.id, device.id
+        assert (
+            "made before proposals held only what they change"
+            in (await c.get("/assets/proposals")).text
+        )
+        r = await c.post(f"/api/assets/proposals/{old_id}/approve")
+        assert "Reject%20it" in r.headers["location"]
+        async with module.session() as s:
+            device = await service.get(s, device_id)
+            assert device is not None and service.record_fields(device) == {"status": "Retired"}
 
 
 async def test_a_field_called_name_never_hides_the_record_link(

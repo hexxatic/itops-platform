@@ -19,6 +19,21 @@
     {{ ui.field("seats_in_use", "Seats in use", value=seats_in_use, type="number") }}
   </div>
   {% endcall %}
+  {% if can_costs %}
+  {% call ui.card("Rates") %}
+  <div class="stack">
+    <p class="muted">Usage the term charges for: what each one costs (up to five decimal places) and how many a month are included, if any. Clear a row to remove it.</p>
+    {% for r in rate_rows %}
+    <div class="row">
+      {{ ui.field("rate_item", "Charged for", value=r.item) }}
+      {{ ui.field("rate_price", "Price each ($)", value=r.price) }}
+      {{ ui.field("rate_included", "Included a month", value=r.included, type="number") }}
+    </div>
+    {% endfor %}
+    <p class="field-help">For example: "B&W page", 0.0099, 0. Need more rows? Save, and three more appear.</p>
+  </div>
+  {% endcall %}
+  {% endif %}
   {% call ui.card("Files") %}{{ ui.attachment_editor(files, max_mb=max_attachment_mb) }}{% endcall %}
   <div class="actions">{{ ui.button("Save", type="submit", variant="primary") }}{{ ui.button("Cancel", href="/contracts/c/" ~ contract.id) }}</div>
 </form>

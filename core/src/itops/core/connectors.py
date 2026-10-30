@@ -24,7 +24,7 @@ import json
 import logging
 import os
 import re
-from collections.abc import Awaitable, Callable, Generator
+from collections.abc import Awaitable, Callable, Generator, Iterable
 from contextlib import contextmanager
 from contextvars import ContextVar
 from dataclasses import dataclass, field
@@ -34,13 +34,15 @@ from dotenv import dotenv_values
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
-from itops.core import auth
+from itops.core import auth, problems
 from itops.core.audit import AuditLog
 from itops.core.manifest import ConnectorDecl
 
 # Only admins hold it: roles grant permissions by their last word (read/write/publish).
 CONNECTORS_PERMISSION = "itops.connectors"
 MAX_PROBLEMS = 500
+ITEM_DAYS = 30  # how long a run's item-by-item list is kept (its counts stay)
+NOT_LISTED = ("unchanged",)  # outcomes only counted, never listed item by item
 PROGRESS_SECONDS = 2.0  # how often a running connector's progress is saved
 TICK_SECONDS = 30
 log = logging.getLogger("itops.connectors")
@@ -49,6 +51,12 @@ log = logging.getLogger("itops.connectors")
 class ConnectorError(RuntimeError):
     """A problem that stops a run (missing secret, misconfiguration)."""
 
+
+STOPPED = (
+    "IT-Ops shut down (a restart or an update) during the run, so it stopped here: nothing "
+    "after this point was synced, and nothing is flagged as gone after a stopped run. It runs "
+    "again at its next scheduled time, or run it now."
+)
 
 HUMAN_ONLY = (
     "Only a person can start a real run or turn a connector on (in the web UI). Tokens and AI "
@@ -158,11 +166,12 @@ class SourceRef:
     first_seen: dt.datetime
     last_seen: dt.datetime
     missing_since: dt.datetime | None
+    last_run_id: int | None = None
 
 
 _REF_COLUMNS = (
     "id, connector, source_type, source_id, module, entity_kind, entity_id, fingerprint,"
-    " first_seen, last_seen, missing_since"
+    " first_seen, last_seen, missing_since, last_run_id"
 )
 
 
@@ -236,6 +245,48 @@ class SourceRefs:
             {"r": run_id, "f": fingerprint, "id": ref.id},
         )
 
+    async def release(self, s: AsyncSession, ref_id: int) -> None:
+        """Forget a reference: its source record was replaced by another one (a source that
+        re-creates a record under a new id), so it mustn't be flagged missing."""
+        await s.execute(text("DELETE FROM itops.source_refs WHERE id = :id"), {"id": ref_id})
+
+    async def move(
+        self, s: AsyncSession, *, module: str, entity_kind: str, from_id: str, to_id: str
+    ) -> int:
+        """Point every reference to one entity at another (two records found to be one thing
+        were merged). References already flagged missing are forgotten instead: their source
+        record is gone, so moving one would only flag the kept entity. Returns how many
+        moved."""
+        await s.execute(
+            text(
+                "DELETE FROM itops.source_refs WHERE module = :m AND entity_kind = :k"
+                " AND entity_id = :e AND missing_since IS NOT NULL"
+            ),
+            {"m": module, "k": entity_kind, "e": from_id},
+        )
+        result = await s.execute(
+            text(
+                "UPDATE itops.source_refs SET entity_id = :to WHERE module = :m"
+                " AND entity_kind = :k AND entity_id = :e"
+            ),
+            {"to": to_id, "m": module, "k": entity_kind, "e": from_id},
+        )
+        return _rowcount(result)
+
+    async def missing(
+        self, s: AsyncSession, *, connector: str, source_type: str
+    ) -> list[SourceRef]:
+        """References of ``source_type`` flagged as no longer in the source, newest first."""
+        rows = await s.execute(
+            text(
+                f"SELECT {_REF_COLUMNS} FROM itops.source_refs WHERE connector = :c"
+                " AND source_type = :t AND missing_since IS NOT NULL"
+                " ORDER BY missing_since DESC, id"
+            ),
+            {"c": connector, "t": source_type},
+        )
+        return [_ref(r) for r in rows.all()]
+
     async def for_entity(
         self, s: AsyncSession, *, module: str, entity_kind: str, entity_id: str
     ) -> list[SourceRef]:
@@ -247,6 +298,20 @@ class SourceRefs:
             {"m": module, "k": entity_kind, "e": entity_id},
         )
         return [_ref(r) for r in rows.all()]
+
+    async def live_for_kind(
+        self, s: AsyncSession, *, module: str, entity_kind: str
+    ) -> list[tuple[str, str]]:
+        """(entity id, connector) for every reference to this module's ``entity_kind`` that
+        its source still lists (not flagged missing): one query for a whole list page."""
+        rows = await s.execute(
+            text(
+                "SELECT DISTINCT entity_id, connector FROM itops.source_refs WHERE module = :m"
+                " AND entity_kind = :k AND missing_since IS NULL"
+            ),
+            {"m": module, "k": entity_kind},
+        )
+        return [(str(e), str(c)) for e, c in rows.all()]
 
     async def mark_missing(
         self, s: AsyncSession, *, connector: str, source_type: str, run_id: int
@@ -286,7 +351,8 @@ class ConnectorContext:
         self.run_id = run_id
         self.dry_run = dry_run
         self.counts: dict[str, int] = {}
-        self.problems: list[dict[str, str]] = []
+        self.report = problems.Report(MAX_PROBLEMS)
+        self.items: list[dict[str, str | None]] = []  # outcome, item, url, detail
         self.progress: dict[str, Any] = {}  # step, number, done, total
         self.changes = 0  # bumped on every report, so progress is only saved when it moved
         self._decl = decl
@@ -312,20 +378,41 @@ class ConnectorContext:
         self.counts[outcome] = self.counts.get(outcome, 0) + n
         self.changes += 1
 
-    def problem(self, message: str, *, item: str | None = None) -> None:
-        """Something a person should look at (the run carries on)."""
+    @property
+    def problems(self) -> list[dict[str, str]]:
+        """Everything reported so far, problems and notes (as stored)."""
+        return self.report.entries
+
+    def problem(self, message: str, *, item: str | None = None, url: str | None = None) -> None:
+        """Something a person should act on (the run carries on). Say what happened, what it
+        affects and what to do; ``url``: the IT-Ops page where they do it."""
         self.changes += 1
-        if len(self.problems) < MAX_PROBLEMS:
-            self.problems.append({"item": (item or "")[:300], "text": message[:1000]})
-        elif len(self.problems) == MAX_PROBLEMS:
-            self.problems.append({"item": "", "text": "More problems were left out."})
+        self.report.add(message, item=item, url=url)
+
+    def note(self, message: str, *, item: str | None = None, url: str | None = None) -> None:
+        """Something worth knowing that needs no action (a decision the sync made): listed
+        under Notes, and the run still counts as succeeded."""
+        self.changes += 1
+        self.report.add(message, item=item, url=url, note=True)
 
     def apply(self, result: dict[str, Any], *, item: str | None = None) -> None:
-        """Count an upsert service's result ({outcome, problem?}): one item done."""
-        self.count(str(result.get("outcome", "unknown")))
+        """Count an upsert service's result ({outcome, problem?, url?, detail?}): one item
+        done. Listed under its outcome on the run's page (unless unchanged), linked to ``url``
+        with ``detail`` (what changed)."""
+        outcome = str(result.get("outcome", "unknown"))
+        self.count(outcome)
         self.advance()
+        if outcome not in NOT_LISTED:
+            name = item or str(result.get("id") or "")
+            detail = result.get("detail")
+            self.items.append({
+                "outcome": outcome[:60], "item": name[:300] or "(no name)",
+                "url": problems.local_url(str(result.get("url") or "")),
+                "detail": str(detail)[:500] if detail else None,
+            })  # fmt: skip
         if result.get("problem"):
-            self.problem(str(result["problem"]), item=item)
+            url = result.get("problem_url")
+            self.problem(str(result["problem"]), item=item, url=str(url) if url else None)
 
     def secret(self, name: str) -> str:
         """A declared secret, from ``ITOPS_<MODULE>_<NAME>`` (never stored in IT-Ops)."""
@@ -334,7 +421,10 @@ class ConnectorContext:
         env_name = f"ITOPS_{self.key.split('.', 1)[0]}_{name}".upper()
         value = self._secrets(env_name)
         if not value:
-            raise ConnectorError(f"{env_name} isn't set on this server")
+            raise ConnectorError(
+                f"{env_name} isn't set on this server, so it can't run. An admin sets it in "
+                "the server's .env file; then run it again."
+            )
         return value
 
     def finished(self, source_type: str) -> None:
@@ -350,6 +440,14 @@ ConnectorFn = Callable[[ConnectorContext], Awaitable[None]]
 # ---- runs ---------------------------------------------------------------------------------
 
 
+async def stop_tasks(tasks: Iterable[asyncio.Task[None]]) -> None:
+    """Cancel running tasks and wait until each has recorded how it ended."""
+    running = [t for t in tasks if not t.done()]
+    for task in running:
+        task.cancel()
+    await asyncio.gather(*running, return_exceptions=True)
+
+
 @dataclass(frozen=True)
 class Run:
     id: int
@@ -361,9 +459,10 @@ class Run:
     finished_at: dt.datetime | None
     status: str
     counts: dict[str, int]
-    problems: list[dict[str, str]]
+    problems: list[dict[str, str]]  # to act on (``notes`` only inform)
     summary: str
     progress: dict[str, Any] = field(default_factory=dict[str, Any])
+    notes: list[dict[str, str]] = field(default_factory=list[dict[str, str]])
 
     @property
     def duration(self) -> str:
@@ -382,12 +481,13 @@ _RUN_COLUMNS = (
 
 
 def _run_row(row: Any) -> Run:
+    found, notes = problems.split(json.loads(row[9]) if row[9] else [])
     return Run(
         id=row[0], connector=row[1], trigger=row[2], dry_run=bool(row[3]), started_by=row[4],
         started_at=row[5], finished_at=row[6], status=row[7],
         counts=json.loads(row[8]) if row[8] else {},
-        problems=json.loads(row[9]) if row[9] else [], summary=row[10] or "",
-        progress=json.loads(row[11]) if row[11] else {},
+        problems=found, summary=row[10] or "",
+        progress=json.loads(row[11]) if row[11] else {}, notes=notes,
     )  # fmt: skip
 
 
@@ -489,6 +589,41 @@ class ConnectorRunner:
             await s.commit()
 
     # -- runs
+
+    async def items(
+        self, run_id: int, outcome: str | None = None, *, limit: int | None = None
+    ) -> list[dict[str, Any]]:
+        """What a run did item by item ({outcome, item, url, detail}), in the order it
+        happened; ``outcome`` for one outcome only."""
+        where = " AND outcome = :o" if outcome else ""
+        top = f"TOP ({int(limit)}) " if limit else ""
+        async with self._maker()() as s:
+            rows = await s.execute(
+                text(
+                    f"SELECT {top}outcome, item, url, detail FROM itops.connector_run_items"
+                    f" WHERE run_id = :r{where} ORDER BY id"
+                ),
+                {"r": run_id, "o": outcome},
+            )
+            return [{"outcome": o, "item": i, "url": u, "detail": d or ""}
+                    for o, i, u, d in rows.all()]  # fmt: skip
+
+    async def item_counts(self, run_id: int) -> dict[str, int]:
+        """How many items a run listed per outcome."""
+        async with self._maker()() as s:
+            rows = await s.execute(
+                text(
+                    "SELECT outcome, COUNT(*) FROM itops.connector_run_items WHERE run_id = :r"
+                    " GROUP BY outcome"
+                ),
+                {"r": run_id},
+            )
+            return {o: int(n) for o, n in rows.all()}
+
+    async def missing(self, key: str, source_type: str) -> list[SourceRef]:
+        """What connector ``key``'s source no longer lists, of ``source_type``."""
+        async with self._maker()() as s:
+            return await self.refs.missing(s, connector=key, source_type=source_type)
 
     async def runs(self, key: str, *, limit: int = 30) -> list[Run]:
         async with self._maker()() as s:
@@ -598,19 +733,30 @@ class ConnectorRunner:
                             )
                             if n:
                                 ctx.count("missing from source", n)
+                                system = reg.decl.system
                                 ctx.problem(
-                                    f"{n} record(s) are no longer in {reg.decl.system}; "
-                                    "each one's page says so. Check them and remove what's "
-                                    "really gone.",
+                                    f"{n} record(s) {system} no longer lists. Open the list "
+                                    "and check each: delete it if it's really gone. If it's "
+                                    f"still in use, {system} has dropped or deactivated it: "
+                                    "fix that there and the next run clears the flag.",
                                     item=source_type,
+                                    url=f"/connectors/{reg.key}/missing/{source_type}",
                                 )
                         await s.commit()
-            if ctx.problems:
+            if ctx.report.has_problems:
                 status = "problems"
+        except asyncio.CancelledError:  # the service is shutting down (ConnectorRunner.stop)
+            status = "stopped"
+            ctx.problem(STOPPED)
+            raise
         except Exception as exc:
             status = "failed"
             log.exception("connector %s run %s failed", reg.key, run_id)
-            ctx.problem(f"The run stopped: {exc}")
+            ctx.problem(
+                f"The run stopped before it finished, so what comes after this point wasn't "
+                f"synced: {exc}. Fix the cause (or ask whoever looks after this connector), "
+                "then run it again. Nothing is flagged as gone after a stopped run."
+            )
         finally:
             saver.cancel()
             with contextlib.suppress(asyncio.CancelledError):
@@ -630,6 +776,23 @@ class ConnectorRunner:
                         "pr": json.dumps(ctx.progress) if ctx.progress else None, "i": run_id,
                     },
                 )  # fmt: skip
+                if ctx.items:
+                    await s.execute(
+                        text(
+                            "INSERT INTO itops.connector_run_items (run_id, outcome, item, url,"
+                            " detail) VALUES (:r, :o, :n, :u, :d)"
+                        ),
+                        [{"r": run_id, "o": i["outcome"], "n": i["item"], "u": i["url"],
+                          "d": i["detail"]} for i in ctx.items],
+                    )  # fmt: skip
+                await s.execute(
+                    text(
+                        "DELETE FROM itops.connector_run_items WHERE run_id IN (SELECT id FROM"
+                        " itops.connector_runs WHERE started_at < DATEADD(day, -:days,"
+                        " sysutcdatetime()))"
+                    ),
+                    {"days": ITEM_DAYS},
+                )
                 await s.commit()
 
     async def _save_progress_every(self, ctx: ConnectorContext, run_id: int) -> None:
@@ -661,6 +824,11 @@ class ConnectorRunner:
                 log.warning("couldn't save progress of run %s", run_id, exc_info=True)
 
     # -- scheduling
+
+    async def stop(self) -> None:
+        """At shutdown: stop the runs still going, so each is recorded as stopped (with what
+        it did so far) rather than left running or counted as a success."""
+        await stop_tasks(self._tasks.values())
 
     async def recover(self) -> int:
         """At startup: runs left 'running' by a stopped process are marked failed."""

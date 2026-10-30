@@ -1,6 +1,7 @@
 {% extends "core/shell.html" %}
 {% import "core/components.html" as ui %}
 {% block content %}
+{{ ui.breadcrumb([(module_title, base|replace("/types", "/")), ("Types", None)]) }}
 {% call ui.page_header(module_title ~ " types", "Record types define the fields a " ~ module_title ~ " record can have. Drafts take effect only when an admin publishes them.") %}
   {% if can_approve and drafts %}
     {{ ui.action_button("Publish all drafts (" ~ drafts ~ ")", api ~ "/publish-drafts",

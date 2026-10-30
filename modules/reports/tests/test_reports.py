@@ -4,11 +4,14 @@ definitions and drafts, money kept from those who may not see it, exports, reten
 from __future__ import annotations
 
 import datetime as dt
+import html
 import io
 import json
+import re
 from collections.abc import AsyncGenerator
 from contextlib import asynccontextmanager
 from pathlib import Path
+from urllib.parse import unquote
 
 import httpx
 import pytest
@@ -27,6 +30,8 @@ from itops.testing.app import McpClient, ToolError, acting_as, connector_run, ma
 ADMIN = Principal("admin@example.com", "Admin", frozenset({"*"}))
 WRITER = Principal("tech@example.com", "Tech", frozenset({"reports.read", "reports.write"}))
 READER = Principal("reader@example.com", "Reader", frozenset({"reports.read"}))
+PUBLISHER = Principal("lead@example.com", "Lead",
+                      frozenset({"reports.read", "reports.write", "reports.publish"}))  # fmt: skip
 FILES = TypeDef(
     name="File change",
     fields=[
@@ -159,6 +164,8 @@ async def running(
     async with app.router.lifespan_context(app):
         async with module.session() as s:
             await s.execute(text("DELETE FROM reports.definitions"))
+            await s.execute(text("DELETE FROM reports.proposals"))
+            await s.execute(text("DELETE FROM reports.dataset_proposals"))
             await s.execute(text("DELETE FROM reports.rows"))
             await s.execute(text("DELETE FROM reports.datasets"))
             await s.commit()
@@ -251,6 +258,17 @@ async def test_typed_in_purchases_paste_report_and_export(
             assert (await c.get("/reports/d/device-purchases/rows/new")).status_code == 403
 
 
+async def buttons(c: httpx.AsyncClient, key: str) -> tuple[str, str]:
+    """Where the draft view's Publish and Discard draft post (with the stamp it shows)."""
+    page = (await c.get(f"/reports/r/{key}?draft=1")).text
+    found = [
+        re.search(rf'action="(/api/reports/r/{key}/{action}\?[^"]*)"', page)
+        for action in ("publish", "discard")
+    ]
+    assert found[0] and found[1]
+    return html.unescape(found[0][1]), html.unescape(found[1][1])
+
+
 async def test_ai_drafts_a_report_and_a_person_publishes_it(
     database_url: str, tmp_path: Path
 ) -> None:
@@ -285,14 +303,193 @@ async def test_ai_drafts_a_report_and_a_person_publishes_it(
             cols = (await mcp.call("reports_list_datasets"))[0]["columns"]
             assert "total" not in {c["key"] for c in cols}  # money never reaches AI
         with acting_as(ADMIN):
-            assert "Drafted by AI" in (await c.get("/reports/")).text
+            assert "Waiting for you: report drafts" in (await c.get("/reports/")).text
             assert "a draft" in (await c.get("/reports/r/by-vendor")).text
-            await c.post("/api/reports/r/by-vendor/publish")
+            publish, discard = await buttons(c, "by-vendor")
+        # The AI changes the draft while the person has it open: neither button acts on it.
+        with acting_as(WRITER):
+            await mcp.call(
+                "reports_draft_report", key="by-vendor", dataset="purchases", title="By vendor",
+                config={"breakdowns": [{"label": "Suppliers", "field": "vendor"}]},
+            )  # fmt: skip
+        with acting_as(ADMIN):
+            for url in (publish, discard):
+                r = await c.post(url)
+                assert r.headers["location"].startswith("/reports/r/by-vendor?draft=1&error=Not")
+                assert "after you opened it" in unquote(r.headers["location"])
+            # The stamp is required: it's how the page says what the person saw.
+            assert (await c.post("/api/reports/r/by-vendor/publish")).status_code == 422
+        with acting_as(WRITER):
+            assert await mcp.call("reports_list_reports") == []  # still not published
+        with acting_as(ADMIN):
+            publish, _ = await buttons(c, "by-vendor")  # reloaded: shows the change
+            assert (await c.post(publish)).headers["location"] == "/reports/r/by-vendor"
         with acting_as(WRITER):
             listed = await mcp.call("reports_list_reports")
             assert [r["key"] for r in listed] == ["by-vendor"]
             got = await mcp.call("reports_get_report", key="by-vendor")
-            assert got["breakdowns"][0]["label"] == "Vendors"
+            assert got["breakdowns"][0]["label"] == "Suppliers"
+
+
+async def test_ai_proposes_rows_and_a_person_adds_them(database_url: str, tmp_path: Path) -> None:
+    async with running(database_url, tmp_path) as (c, _):
+        with acting_as(ADMIN):
+            await c.post(
+                "/api/reports/d",
+                data={
+                    "title": "Purchases",
+                    "type_key": "purchase",
+                    "mode": "manual",
+                    "time_field": "date",
+                },
+            )
+        mcp = McpClient([module])
+        batch = [
+            {
+                "Date": "2025-03-21",
+                "Item": "ProBook 460",
+                "Category": "Laptop",
+                "quantity": 5,
+                "Unit cost": "988.10",
+                "total": "4940.50",
+            },
+            {"date": "2025-03-21", "item": "Elite Mini 800", "category": "Desktop", "quantity": 3},
+        ]
+        with acting_as(WRITER):  # via AI: proposes, can't add, never sees money
+            ds = (await mcp.call("reports_list_datasets"))[0]
+            assert {c["key"] for c in ds["money_columns"]} == {"unit_cost", "total"}
+            out = await mcp.call(
+                "reports_propose_rows", dataset="purchases", rows=batch, note="HP quote Q1"
+            )
+            assert out["rows"] == 2 and out["review_url"].endswith("/d/purchases#proposals")
+            for bad, match in (
+                ([{"Item": "x", "Colour": "red", "Date": "2025-01-01"}], "unknown column"),
+                ([{"Item": "x"}], "Row 1"),
+            ):
+                with pytest.raises(ToolError, match=match):
+                    await mcp.call("reports_propose_rows", dataset="purchases", rows=bad, note="n")
+            with pytest.raises(ToolError, match="note"):
+                await mcp.call("reports_propose_rows", dataset="purchases", rows=batch, note=" ")
+            (waiting,) = await mcp.call("reports_list_row_proposals")
+            assert waiting["rows"] == 2 and "4940" not in json.dumps(waiting)
+        ai = Principal(WRITER.user, WRITER.display_name, WRITER.permissions, via_ai=True)
+        with acting_as(ai):  # a token on the REST API is refused too
+            with pytest.raises(reports.ReportsError, match="propose rows instead"):
+                async with module.session() as s:
+                    found = await reports.dataset(s, "purchases")
+                    assert found is not None
+                    await reports.save_paste(s, found, PURCHASES)
+            async with module.session() as s:
+                found = await reports.dataset(s, "purchases")
+                assert found is not None and await reports.count(s, found) == 0
+                got = await reports.get_proposal(s, out["proposal"])
+                assert got is not None
+                with pytest.raises(reports.ReportsError, match="AI connection"):
+                    await reports.approve_proposal(s, *got)
+        approve = f"/api/reports/d/purchases/proposals/{out['proposal']}/approve"
+        with acting_as(WRITER):  # adding rows isn't approving them: reports.publish does
+            assert (await c.post(approve)).status_code == 403
+            page = (await c.get("/reports/d/purchases")).text
+            assert "Someone who can publish reports approves" in page
+        with acting_as(PUBLISHER):  # a person without reports.costs can't approve money unseen
+            page = (await c.get("/reports/d/purchases")).text
+            assert "2 rows proposed by AI" in page and "ProBook 460" in page
+            assert "4,940" not in page and "someone who can see costs" in page
+            r = await c.post(approve)
+            assert "costs" in r.headers["location"]
+        with acting_as(ADMIN):
+            assert "Waiting for you: proposed rows" in (await c.get("/reports/")).text
+            assert "$4,940.50" in (await c.get("/reports/d/purchases")).text
+            r = await c.post(approve)
+            assert r.headers["location"].endswith("added=2")
+            assert "already" in (await c.post(approve)).headers["location"]
+            page = (await c.get("/reports/d/purchases")).text
+            assert "Added 2 rows proposed by" in page and "proposed by AI" not in page
+        with acting_as(WRITER):  # the same batch again is flagged as duplicates, then rejected
+            again = await mcp.call(
+                "reports_propose_rows", dataset="purchases", rows=batch[1:], note="Again"
+            )
+            page = (await c.get("/reports/d/purchases")).text
+            assert "1 of these rows are already in the dataset" in page
+        with acting_as(ADMIN):
+            await c.post(f"/api/reports/d/purchases/proposals/{again['proposal']}/reject")
+        with acting_as(WRITER):
+            assert await mcp.call("reports_list_row_proposals") == []
+        async with module.session() as s:
+            found = await reports.dataset(s, "purchases")
+            assert found is not None and await reports.count(s, found) == 2
+
+
+async def test_ai_proposes_a_dataset_with_rows_and_an_admin_creates_it(
+    database_url: str, tmp_path: Path
+) -> None:
+    mcp = McpClient([module])
+    rows = [{"Date": "2025-06-20", "Item": "ProBook 460", "Category": "Laptop", "Total": "6120"}]
+    async with running(database_url, tmp_path) as (c, _):
+        with acting_as(WRITER):  # via AI
+            out = await mcp.call(
+                "reports_propose_dataset",
+                title="Device purchases",
+                type_key="purchase",
+                time_column="date",
+                note="Computer and peripheral purchases, for the budget's history",
+            )
+            assert out["key"] == "device-purchases" and "admin" in out["status"]
+            for bad, match in (
+                ({"type_key": "nope"}, "published column type"),
+                ({"time_column": "item"}, "time column"),
+                ({"key": "Bad Key"}, "lowercase"),
+                ({}, "already proposed"),
+            ):
+                with pytest.raises(ToolError, match=match):
+                    await mcp.call(
+                        "reports_propose_dataset",
+                        **{"title": "Device purchases", "type_key": "purchase", "note": "n", **bad},
+                    )
+            batch = await mcp.call(
+                "reports_propose_rows", dataset="device-purchases", rows=rows, note="HP invoices"
+            )
+            assert "once an admin creates the dataset" in batch["status"]
+            with pytest.raises(ToolError, match="Row 1"):
+                await mcp.call(
+                    "reports_propose_rows",
+                    dataset="device-purchases",
+                    rows=[{"Item": "no date"}],
+                    note="n",
+                )
+            (waiting,) = await mcp.call("reports_list_row_proposals", dataset="device-purchases")
+            assert "create" in waiting["waiting_for"]
+            assert await mcp.call("reports_list_datasets") == []  # nothing created yet
+        approve = f"/api/reports/dataset-proposals/{out['dataset_proposal']}/approve"
+        with acting_as(WRITER):  # people with reports.write can't create datasets
+            assert (await c.post(approve)).status_code == 403
+            page = (await c.get("/reports/datasets")).text
+            assert "Proposed by AI: Device purchases" in page and "An admin creates" in page
+        with acting_as(ADMIN):
+            assert "Waiting for you: proposed datasets" in (await c.get("/reports/")).text
+            page = (await c.get("/reports/datasets")).text
+            assert "1 proposed row wait for it" in page and "Purchase" in page
+            r = await c.post(approve)
+            assert r.headers["location"] == "/reports/d/device-purchases"
+            assert "already" in (await c.post(approve)).headers["location"]
+            page = (await c.get("/reports/d/device-purchases")).text
+            assert "1 row proposed by AI" in page and "Created the dataset proposed by" in page
+            r = await c.post(
+                f"/api/reports/d/device-purchases/proposals/{batch['proposal']}/approve"
+            )
+            assert r.headers["location"].endswith("added=1")
+        with acting_as(WRITER):  # a rejected dataset takes its waiting rows with it
+            second = await mcp.call(
+                "reports_propose_dataset", title="Phones", type_key="purchase", note="Mobiles"
+            )
+            await mcp.call("reports_propose_rows", dataset="phones", rows=rows, note="n")
+        with acting_as(ADMIN):
+            await c.post(f"/api/reports/dataset-proposals/{second['dataset_proposal']}/reject")
+            assert "Phones" not in (await c.get("/reports/datasets")).text
+        with acting_as(WRITER):
+            assert await mcp.call("reports_list_row_proposals") == []
+            with pytest.raises(ToolError, match="propose it first"):
+                await mcp.call("reports_propose_rows", dataset="phones", rows=rows, note="n")
 
 
 async def test_a_connector_upserts_rows_and_retention_removes_old_ones(
@@ -335,3 +532,63 @@ async def test_a_connector_upserts_rows_and_retention_removes_old_ones(
         async with module.session() as s:
             stored = (await s.execute(text("SELECT source_key, [values] FROM reports.rows"))).all()
         assert [k for k, _ in stored] == ["k1"] and json.loads(stored[0][1])["count"] == 3
+
+
+async def test_connector_upsert_many_is_idempotent_and_atomic(
+    database_url: str, tmp_path: Path
+) -> None:
+    owns = {"reports.rows": ["*"]}
+    async with running(database_url, tmp_path) as _:
+        now = dt.datetime.now().isoformat(timespec="minutes")
+        row = {
+            "time": now,
+            "user": "AD\\alice",
+            "file": r"E:\eng\drawing.dwg",
+            "action": "Write",
+            "count": 2,
+        }
+        page = [
+            {"source_key": "k1", "values": row},
+            {"source_key": "k2", "values": {**row, "count": 3}},
+        ]
+        with connector_run("fake.audit", owns=owns):
+            assert (await reports.ensure_dataset("file-changes", "File changes", "file_change"))[
+                "created"
+            ]
+            assert (await reports.upsert_many("file-changes", page))["counts"] == {
+                "created": 2,
+                "updated": 0,
+                "unchanged": 0,
+            }
+            assert (await reports.upsert_many("file-changes", page))["counts"] == {
+                "created": 0,
+                "updated": 0,
+                "unchanged": 2,
+            }
+            changed = [{**page[0], "values": {**row, "count": 4}}, page[1]]
+            assert (await reports.upsert_many("file-changes", changed))["counts"] == {
+                "created": 0,
+                "updated": 1,
+                "unchanged": 1,
+            }
+            rejected = await reports.upsert_many(
+                "file-changes",
+                [
+                    {"source_key": "k3", "values": row},
+                    {"source_key": "k4", "values": {"user": "missing required fields"}},
+                ],
+            )
+            assert rejected["outcome"] == "invalid"
+            with connector_run("fake.audit", owns=owns, dry_run=True):
+                preview = await reports.upsert_many(
+                    "file-changes", [{"source_key": "k5", "values": row}]
+                )
+                assert preview["counts"] == {"created": 1, "updated": 0, "unchanged": 0}
+        async with module.session() as s:
+            stored = (
+                await s.execute(
+                    text("SELECT source_key, [values] FROM reports.rows ORDER BY source_key")
+                )
+            ).all()
+        assert [key for key, _ in stored] == ["k1", "k2"]
+        assert json.loads(stored[0][1])["count"] == 4

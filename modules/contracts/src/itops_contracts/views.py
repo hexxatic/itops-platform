@@ -19,14 +19,17 @@ from fastapi.responses import RedirectResponse
 from itops.sdk import AIUnavailable, FileRejected, KeptForm, Principal
 from itops_contracts import service
 from itops_contracts.app import module
-from itops_contracts.models import Contract, Term
+from itops_contracts.models import Contract, Proposal, Term
 from itops_contracts.service import (
     CATEGORIES,
     COST_PERIODS,
     LINKS,
+    PROPOSAL_STATES,
     STATES,
     ContractInput,
     ContractsError,
+    ParsedRate,
+    RateInput,
     TermInput,
     can_see_costs,
     cancel_by,
@@ -55,6 +58,57 @@ def _when(value: dt.datetime | None) -> str:
 
 def _money(value: Decimal | None) -> str:
     return "" if value is None else f"${value:,.2f}"
+
+
+def _price(value: Decimal) -> str:
+    """A rate's price to as many places as it has, at least two: $0.0099, $0.069, $1.25."""
+    whole, _, frac = f"{value:,.5f}".rstrip("0").partition(".")
+    return f"${whole}.{frac.ljust(2, '0')}"
+
+
+def _rate_text(r: ParsedRate | None) -> str:
+    if r is None:
+        return ""
+    return f"{_price(r.price)} each" + (f", {r.included:,} a month included" if r.included else "")
+
+
+def _parsed(rates: list[Any]) -> list[ParsedRate]:
+    return [ParsedRate(r.item, r.price, r.included_per_month) for r in rates]
+
+
+def _rate_rows(rates: list[ParsedRate]) -> list[dict[str, str]]:
+    return [{"item": r.item, "price": _price(r.price),
+             "included": f"{r.included:,}" if r.included else ""} for r in rates]  # fmt: skip
+
+
+async def _proposal_view(s: Any, p: Proposal, t: Term, c: Contract) -> dict[str, Any]:
+    """A proposal as its card shows it: each thing it changes, now and proposed."""
+    data = service.proposal_data(p)
+    rows: list[dict[str, str]] = []
+    if "cost" in data:
+        now = f"{_money(t.cost)} {COST_PERIODS[t.cost_period]}" if t.cost is not None else ""
+        rows.append({"field": "Cost", "before": now or "Not set",
+                     "after": f"{_money(Decimal(data['cost']))} "
+                              f"{COST_PERIODS[data['cost_period']]}"})  # fmt: skip
+    given = service.proposal_rates(p)
+    if given is not None:
+        now_rates = {r.item: r for r in _parsed(await service.rates(s, t.id))}
+        new_rates = {r.item: r for r in given}
+        for item in [*new_rates, *(i for i in now_rates if i not in new_rates)]:
+            rows.append({"field": item, "before": _rate_text(now_rates.get(item)) or "Not set",
+                         "after": _rate_text(new_rates.get(item)) or "Removed"})  # fmt: skip
+    return {
+        "id": p.id,
+        "contract": {"text": c.name, "href": f"/contracts/c/{c.id}"},
+        "title": f"{c.name}: {service.proposal_what(p)}",
+        "term": f"{t.starts_on} to {t.ends_on}",
+        "by": p.proposed_by + (" (via AI)" if p.proposed_via_ai else ""),
+        "when": _when(p.proposed_at),
+        "note": p.note,
+        "rows": rows,
+        "status": PROPOSAL_STATES[p.status],
+        "decided": f"{p.decided_by}, {_when(p.decided_at)}" if p.decided_by else "",
+    }
 
 
 def _can(permission: str) -> bool:
@@ -104,9 +158,13 @@ def _seat_warning(t: Term) -> str | None:
     if t.seats_bought is None or t.seats_in_use is None or t.seats_bought == 0:
         return None
     if t.seats_in_use > t.seats_bought:
-        return f"{t.seats_in_use - t.seats_bought} more seats in use than bought."
+        return (f"{t.seats_in_use - t.seats_bought} more seats in use than bought: expect a "
+                "true-up charge, or a finding at an audit. Buy the extra seats or remove "
+                "users, then update Seats bought on this term (Edit term).")  # fmt: skip
     if t.seats_in_use < t.seats_bought * 0.8:
-        return f"{t.seats_bought - t.seats_in_use} seats bought but not in use."
+        return (f"{t.seats_bought - t.seats_in_use} seats bought but not in use: paid for and "
+                "unused. Lower the count at the next renewal, or update Seats in use if it's "
+                "out of date.")  # fmt: skip
     return None
 
 
@@ -238,6 +296,12 @@ async def home(request: Request) -> dict[str, Any]:
         )
         current = {c.id: await service.current_term(s, c.id) for c in found}
         drafts = await service.contracts(s, status="draft") if _can("contracts.write") else []
+        costs = can_see_costs(module.current_principal())
+        proposed = len(await service.proposals(s)) if costs else 0
+    # Files this person had read for a new contract, not yet made into one or discarded.
+    files = [
+        r for r in await module.ai.my_runs_to_review() if r.entity_type == NEW_ENTITY
+    ] if _can("contracts.write") else []  # fmt: skip
     names = await module.people.names(
         [c.owner_upn for c in [*found, *(u.contract for u in coming)] if c.owner_upn]
     )
@@ -278,6 +342,13 @@ async def home(request: Request) -> dict[str, Any]:
             }
             for c in drafts
         ],
+        "files": [
+            {
+                "file": {"text": r.filename, "href": f"/contracts/from-file/{r.id}"},
+                "when": _when(r.finished_at or r.created_at),
+            }
+            for r in files
+        ],
         "categories": [("", "All categories"), *CATEGORIES.items()],
         "owners": [("", "Anyone"), *await module.people.options(holding="contracts.read")],
         "category": category or "",
@@ -285,7 +356,9 @@ async def home(request: Request) -> dict[str, Any]:
         "archived": archived,
         "query": query,
         "can_write": _can("contracts.write"),
-        "can_costs": can_see_costs(module.current_principal()),
+        "can_approve": _can("contracts.approve"),
+        "can_costs": costs,
+        "proposed": proposed,
         "error": request.query_params.get("error"),
     }
 
@@ -294,11 +367,14 @@ async def home(request: Request) -> dict[str, Any]:
     "/c/{contract_id}", template="contract.html", title="Contract", permission="contracts.read"
 )
 async def contract_page(request: Request) -> dict[str, Any]:
+    who = module.current_principal()
+    costs = can_see_costs(who)
     async with module.session() as s:
         c = await _contract_or_404(s, request.path_params["contract_id"])
         history = await service.terms(s, c.id)
-    who = module.current_principal()
-    costs = can_see_costs(who)
+        rates = _parsed(await service.rates(s, history[0].id)) if costs and history else []
+        proposed = [await _proposal_view(s, *x) for x in await service.proposals(
+            s, contract_id=c.id)] if costs else []  # fmt: skip
     t = history[0] if history else None
     links = await module.links.resolve(contract_links(c))
     owner = (await module.people.names([c.owner_upn])).get(c.owner_upn) if c.owner_upn else None
@@ -306,6 +382,7 @@ async def contract_page(request: Request) -> dict[str, Any]:
     return {
         "page_title": c.name,
         "contract": c,
+        "stamp": service.stamp(c),
         "category": CATEGORIES.get(c.category, c.category),
         "owner": owner or c.owner_upn or "Nobody yet",
         "term": t,
@@ -318,6 +395,9 @@ async def contract_page(request: Request) -> dict[str, Any]:
         if t and costs and t.cost is not None
         else "",
         "seats": _seats(t) if t else "",
+        "can_costs": costs,
+        "rates": _rate_rows(rates),
+        "proposals": proposed,
         "seat_warning": _seat_warning(t) if t else None,
         "files": term_attachments(t) if t else [],
         "can_suggest": _suggestions_on() and _can("contracts.write") and c.status != "archived",
@@ -404,22 +484,35 @@ async def edit_page(request: Request) -> dict[str, Any]:
     "/t/{term_id}/edit", template="term_edit.html", title="Edit term", permission="contracts.write"
 )
 async def term_page(request: Request) -> dict[str, Any]:
+    costs = can_see_costs(module.current_principal())
     async with module.session() as s:
         t = await service.get_term(s, request.path_params["term_id"])
         if t is None:
             raise HTTPException(status_code=404, detail="Term not found")
         c = await _contract_or_404(s, str(t.contract_id))
+        saved = _parsed(await service.rates(s, t.id)) if costs else []
     kept = module.forms.recall(request)
+    if kept is not None:
+        rate_rows = [{"item": i, "price": p, "included": n} for i, p, n in zip(
+            kept.getlist("rate_item"), kept.getlist("rate_price"), kept.getlist("rate_included"),
+            strict=False)]  # fmt: skip
+    else:
+        rate_rows = [
+            {"item": r.item, "price": f"{r.price.normalize():f}",
+             "included": "" if r.included is None else str(r.included)}
+            for r in saved
+        ]  # fmt: skip
     return {
         "page_title": f"Term: {c.name}",
         "contract": c,
         "term": t,
+        "rate_rows": rate_rows + [{"item": "", "price": "", "included": ""}] * 3,
         **_term_context(kept, t),
         "periods": list(COST_PERIODS.items()),
         "files": term_attachments(t),
         "files_dropped": bool(kept and kept.files_dropped),
         "max_attachment_mb": module.files.max_bytes(attachment=True) // (1024 * 1024),
-        "can_costs": can_see_costs(module.current_principal()),
+        "can_costs": costs,
         "error": request.query_params.get("error"),
     }
 
@@ -502,9 +595,27 @@ async def costs_page(request: Request) -> dict[str, Any]:
     }
 
 
+@module.page("/proposals", template="proposals.html", title="Proposed costs",
+             permission="contracts.costs")  # fmt: skip
+async def proposals_page(request: Request) -> dict[str, Any]:
+    async with module.session() as s:
+        waiting = [await _proposal_view(s, *x) for x in await service.proposals(s)]
+        decided = [
+            await _proposal_view(s, *x)
+            for x in await service.proposals(s, status=None, limit=50)
+            if x[0].status != "pending"
+        ]
+    return {
+        "proposals": waiting,
+        "decided": [{**d, "what": d["title"]} for d in decided],
+        "error": request.query_params.get("error"),
+    }
+
+
 # ---- actions ------------------------------------------------------------------------------
 
 Text = Annotated[str, Form()]
+Texts = Annotated[list[str] | None, Form()]
 
 
 @module.router.post("/contracts")
@@ -596,8 +707,13 @@ async def update_term(
     seats_in_use: Text = "",
     attachments: Uploads = None,
     remove_attachment: Annotated[list[str] | None, Form()] = None,
+    rate_item: Texts = None,
+    rate_price: Texts = None,
+    rate_included: Texts = None,
 ) -> RedirectResponse:
     term = TermInput(starts_on, ends_on, cost, cost_period, po_number, seats_bought, seats_in_use)
+    rates = [RateInput(i, p, n) for i, p, n in zip(
+        rate_item or [], rate_price or [], rate_included or [], strict=False)]  # fmt: skip
     contract_id = ""
     try:
         uploaded = await _store_uploads(attachments)
@@ -610,6 +726,8 @@ async def update_term(
             await service.update_term(
                 s, who, c, t, term, add_files=uploaded, remove_files=set(remove_attachment or [])
             )
+            if can_see_costs(who):  # the form shows rates only to them; others keep them
+                await service.set_rates(s, who, c, t, rates)
             await s.commit()
     except ContractsError as exc:
         return await module.forms.back(request, f"/contracts/t/{term_id}/edit", str(exc))
@@ -642,7 +760,7 @@ async def renew_contract(
 
 
 async def _decide(
-    contract_id: str, who: Principal, action: str, note: str = ""
+    contract_id: str, who: Principal, action: str, note: str = "", *, reviewed: str | None = None
 ) -> RedirectResponse:
     try:
         async with module.session() as s:
@@ -652,13 +770,13 @@ async def _decide(
             elif action == "cancel":
                 await service.cancel(s, who, c, note=note)
             elif action == "accept":
-                await service.accept(s, who, c)
+                await service.accept(s, who, c, reviewed=reviewed)
             elif action == "archive":
                 await service.archive(s, who, c)
             elif action == "restore":
                 await service.restore(s, who, c)
             elif action == "discard":
-                await service.discard_draft(s, who, c)
+                await service.discard_draft(s, who, c, reviewed=reviewed)
                 await s.commit()
                 return _back("/contracts/")
             await s.commit()
@@ -677,14 +795,16 @@ async def cancel_contract(contract_id: str, who: CanApprove, note: Text = "") ->
     return await _decide(contract_id, who, "cancel", note)
 
 
+# Accept and discard send back the stamp the page showed (``?reviewed=``), so a draft
+# changed after the page loaded (by an AI connection, say) is refused, not acted on.
 @module.router.post("/contracts/{contract_id}/accept")
-async def accept_draft(contract_id: str, who: CanApprove) -> RedirectResponse:
-    return await _decide(contract_id, who, "accept")
+async def accept_draft(contract_id: str, who: CanApprove, reviewed: str) -> RedirectResponse:
+    return await _decide(contract_id, who, "accept", reviewed=reviewed)
 
 
 @module.router.post("/contracts/{contract_id}/discard")
-async def discard_draft(contract_id: str, who: CanApprove) -> RedirectResponse:
-    return await _decide(contract_id, who, "discard")
+async def discard_draft(contract_id: str, who: CanApprove, reviewed: str) -> RedirectResponse:
+    return await _decide(contract_id, who, "discard", reviewed=reviewed)
 
 
 @module.router.post("/contracts/{contract_id}/archive")
@@ -695,6 +815,34 @@ async def archive_contract(contract_id: str, who: CanApprove) -> RedirectRespons
 @module.router.post("/contracts/{contract_id}/restore")
 async def restore_contract(contract_id: str, who: CanApprove) -> RedirectResponse:
     return await _decide(contract_id, who, "restore")
+
+
+async def _decide_proposal(proposal_id: int, who: Principal, *, apply: bool,
+                           back: str) -> RedirectResponse:  # fmt: skip
+    """Apply or reject; back to the proposals page (``back=list``) or the contract's page."""
+    url = "/contracts/proposals"
+    try:
+        async with module.session() as s:
+            p = await service.get_proposal(s, proposal_id)
+            if p is None:
+                raise HTTPException(status_code=404, detail="Proposal not found")
+            c = await service.decide_proposal(s, who, p, apply=apply)
+            await s.commit()
+            if back != "list":
+                url = f"/contracts/c/{c.id}"
+    except ContractsError as exc:
+        return _back(url, str(exc))
+    return _back(url)
+
+
+@module.router.post("/proposals/{proposal_id}/apply")
+async def apply_proposal(proposal_id: int, who: CanWrite, back: str = "") -> RedirectResponse:
+    return await _decide_proposal(proposal_id, who, apply=True, back=back)
+
+
+@module.router.post("/proposals/{proposal_id}/reject")
+async def reject_proposal(proposal_id: int, who: CanWrite, back: str = "") -> RedirectResponse:
+    return await _decide_proposal(proposal_id, who, apply=False, back=back)
 
 
 # ---- AI suggestions from a term's files (ADR 0015) -------------------------------------------
@@ -969,3 +1117,13 @@ async def create_from_file(
         return await module.forms.back(request, url, str(exc))
     await module.ai.suggestions_reviewed(run_id, {k: used[k] for k in kept_from_file})
     return _back(f"/contracts/c/{cid}")
+
+
+@module.router.post("/from-file/{run_id}/discard")
+async def discard_from_file(run_id: int, who: CanWrite) -> RedirectResponse:
+    """The file isn't a contract to add: nothing is created, and it stops waiting."""
+    run = await _new_run(run_id)
+    if run.status != "done":
+        return _back(f"/contracts/from-file/{run_id}", "This file was already dealt with.")
+    await module.ai.suggestions_reviewed(run_id, {})
+    return _back("/contracts/")

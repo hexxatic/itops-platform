@@ -4,9 +4,15 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>{% if page_title %}{{ page_title }} · {% endif %}{{ brand_name }}</title>
+  <title>{% if page_title %}{{ page_title }} · {% endif %}{{ site_title() }}</title>
   {#- Root-relative paths, never url_for(): behind the IIS proxy url_for builds absolute URLs
       from the app's internal address (http://127.0.0.1:port), which browsers can't load. -#}
+  {% if app_icons %}
+  <link rel="manifest" href="/manifest.webmanifest">
+  <link rel="icon" type="image/png" href="{{ app_icons[0][0] }}">
+  <link rel="apple-touch-icon" href="{{ app_icons[-1][0] }}">
+  <meta name="theme-color" content="{{ app_color }}">
+  {% endif %}
   <link rel="stylesheet" href="/static/tokens.css?v={{ asset_version() }}">
   {% if theme %}<link rel="stylesheet" href="/theme/theme.css?v={{ theme_version }}">{% endif %}
   <link rel="stylesheet" href="/static/app.css?v={{ asset_version() }}">
@@ -22,19 +28,23 @@
         {% if theme.logo_dark %}<img class="shell-logo shell-logo-dark" src="/theme/{{ theme.logo_dark }}?v={{ theme_version }}" alt="{{ theme.logo_alt or brand_name }}">{% endif %}
       {% endif %}
       <span class="shell-name">
-        <span class="shell-product">{{ brand_name }}</span>
+        <span class="shell-product">{{ site_title() }}</span>
         {% if theme and theme.subtitle %}<span class="shell-subtitle">{{ theme.subtitle }}</span>{% endif %}
       </span>
     </a>
     {% set me = current_user() %}
     {% if me %}
+    {# Not "counts": a page's own counts (a run's outcomes) would be replaced by this. #}
+    {% set nav_count_map = nav_counts() %}
     <nav class="shell-nav" aria-label="Modules">
-      {% for item in nav_items %}
-        <a href="{{ item.href }}"{% if current_module == item.module %} aria-current="page"{% endif %}>{{ item.label }}</a>
+      {% for item in nav_items() %}
+        {% set n = nav_count_map.get(item.module, 0) %}
+        <a href="{{ item.href }}"{% if current_module == item.module %} aria-current="page"{% endif %}>{{ item.label }}{% if n %} <span class="nav-count" title="{{ n }} waiting for you">{{ n }}</span>{% endif %}</a>
       {% endfor %}
+      {% if my_admin_links() %}<a href="/admin"{% if current_module == "admin" %} aria-current="page"{% endif %}>Admin</a>{% endif %}
     </nav>
     <form class="shell-search" role="search" method="get" action="/search">
-      <input class="input" type="search" name="q" placeholder="Search everything" aria-label="Search everything">
+      <input class="input" type="search" name="q" placeholder="Search {{ site_title() }}" aria-label="Search {{ site_title() }}">
     </form>
     <a class="shell-user" href="/account">{{ me.display_name }}</a>
     {% endif %}
@@ -42,6 +52,6 @@
   <main class="shell-main">
     {% block content %}{% endblock %}
   </main>
-  <footer class="shell-footer">{{ brand_name }} · {{ app_version }}</footer>
+  <footer class="shell-footer">{{ site_title() }} · {{ app_version }}</footer>
 </body>
 </html>

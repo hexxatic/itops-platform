@@ -3,7 +3,6 @@
 {% block content %}
 {{ ui.breadcrumb([("Tools", "/tools"), (title, "/tools/" ~ run.action if action else None), ("Run " ~ run.id, None)]) }}
 {% call ui.page_header(title ~ ": run " ~ run.id, "Started " ~ started ~ " by " ~ run.started_by_name ~ ((" · " ~ inputs) if inputs else "") ~ (" · from a request" if run.request_id else "")) %}
-  {% if action %}{{ ui.button("Back to " ~ title, href="/tools/" ~ run.action) }}{% endif %}
   {% if run.status == "running" and can_cancel %}
     {{ ui.action_button("Cancel", "/tools/runs/" ~ run.id ~ "/cancel", variant="danger", confirm="Cancel this run? It stops at its next step.") }}
   {% endif %}
@@ -21,11 +20,7 @@
 </div>
 {% if counts %}{{ ui.table([("outcome", "Outcome"), ("count", "Count")], counts) }}{% endif %}
 {% endcall %}
-{% if run.problems %}
-{% call ui.card("Problems (" ~ run.problems|length ~ ")") %}
-  {{ ui.table([("item", "Item"), ("text", "Problem")], run.problems) }}
-{% endcall %}
-{% endif %}
+{% include "core/run_problems.html" %}
 {% if run.log %}
 {% call ui.card("Output (" ~ log_lines ~ " line" ~ ("s" if log_lines != 1) ~ ")") %}
 <pre class="run-log">{{ run.log }}</pre>

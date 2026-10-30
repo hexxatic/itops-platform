@@ -1,11 +1,11 @@
 {% extends "core/shell.html" %}
 {% import "core/components.html" as ui %}
 {% block content %}
+{% if mode == "new" %}{{ ui.breadcrumb([("Docs", "/docs/"), ("New document", None)]) }}{% else %}{{ ui.breadcrumb([("Docs", "/docs/"), (doc.title, "/docs/d/" ~ doc.slug), ("Edit", None)]) }}{% endif %}
 {% if mode == "new" %}
   {{ ui.page_header("New document", "Saving creates a draft. Publishing is a separate step.") }}
 {% else %}
   {% call ui.page_header("Edit: " ~ doc.title, "Saving creates a new draft version. Readers keep seeing the published one.") %}
-    {{ ui.button("Back to document", href="/docs/d/" ~ doc.slug) }}
   {% endcall %}
 {% endif %}
 {% if error %}{{ ui.alert(error, "danger") }}{% endif %}

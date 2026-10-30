@@ -16,7 +16,7 @@ from fastapi import FastAPI, HTTPException, Request
 from fastapi.responses import HTMLResponse, RedirectResponse, Response
 from fastapi.templating import Jinja2Templates
 
-from itops.core import auth
+from itops.core import auth, problems
 from itops.core.actions import ActionBusy, ActionError, ActionRun, RegisteredAction
 from itops.core.runtime import Runtime
 
@@ -85,6 +85,8 @@ def mount_tools(app: FastAPI, templates: Jinja2Templates, runtime: Runtime) -> N
             "title": action.decl.title if action else run.action,
             "status": _status(run),
             "counts": [{"outcome": k, "count": n} for k, n in run.counts.items()],
+            "problems": problems.rows(run.problems),
+            "notes": problems.rows(run.notes),
             "log_tail": "\n".join(lines[-LOG_TAIL:]),
             "log_lines": len(lines),
             "inputs": _inputs_text(run.inputs, action),

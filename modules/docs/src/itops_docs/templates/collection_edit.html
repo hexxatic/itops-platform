@@ -1,6 +1,7 @@
 {% extends "core/shell.html" %}
 {% import "core/components.html" as ui %}
 {% block content %}
+{% if col %}{{ ui.breadcrumb([("Docs", "/docs/"), ("Collections", "/docs/collections"), (col.name, "/docs/c/" ~ col.slug), ("Edit", None)]) }}{% else %}{{ ui.breadcrumb([("Docs", "/docs/"), ("Collections", "/docs/collections"), ("New collection", None)]) }}{% endif %}
 {% if col %}
   {{ ui.page_header("Edit: " ~ col.name, "Renaming keeps its web address (/docs/c/" ~ col.slug ~ "), so links keep working.") }}
 {% else %}

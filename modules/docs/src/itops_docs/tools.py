@@ -8,12 +8,16 @@ rule are identical for people and AI.
 
 from __future__ import annotations
 
+import base64
+import binascii
+import html as html_lib
 import inspect
+from pathlib import PurePath
 from typing import Any
 
 from pydantic import ValidationError
 
-from itops.sdk import Principal
+from itops.sdk import FileRejected, Principal
 from itops.sdk.content import Content, from_html, from_markdown, plain_text
 from itops_docs import service
 from itops_docs.app import module
@@ -33,7 +37,8 @@ CONTENT_HELP = (
     "{type:'text', html}, {type:'step', html, duration_min?}, {type:'html', html}) "
     "or `html` (rich HTML kept as written, e.g. collapsible sections and styled tables). "
     "Use step blocks for procedures: they are numbered automatically. "
-    "Scripts, styles and external images are removed on save."
+    "Scripts, styles and external images are removed on save. For a screenshot, upload it "
+    "first with upload_image and put the `markdown` it returns where the image goes."
 )
 FIELDS_HELP = (
     "`fields` are the document type's values as {field_key: value} (see the type's fields "
@@ -115,16 +120,37 @@ async def list_documents(
     limit: int = 50,
 ) -> list[dict[str, Any]]:
     """List documents, newest first. Optional filters: collection slug; status
-    'draft' | 'published' | 'archived' (archived are hidden unless asked for); type (a
-    document type key, see itops_list_types(module='docs'))."""
-    if status not in (None, "draft", "published", "archived"):
-        raise DocsError("status must be draft, published or archived.")
+    'draft' | 'published' | 'archived' (archived are hidden unless asked for) | 'pending'
+    (everything waiting for a person to publish it: new drafts and published documents
+    with unpublished edits, each with the edit's version, change_note, who saved it and
+    when); type (a document type key, see itops_list_types(module='docs')). Every
+    document says whether it has_unpublished_changes."""
+    if status not in (None, "draft", "published", "archived", "pending"):
+        raise DocsError("status must be draft, published, archived or pending.")
+    limit = max(1, min(limit, 200))
     async with module.session() as s:
         col_id = await _collection_id(s, collection) if collection else None
-        docs = await service.documents(
-            s, collection_id=col_id, status=status, limit=max(1, min(limit, 200))
-        )
-    return [_summary(d) for d in docs if type is None or d.type_key == type]
+        waiting = await service.waiting(s, collection_id=col_id)
+        if status == "pending":
+            return [
+                {
+                    **_summary(d),
+                    "has_unpublished_changes": d.status != "draft",
+                    "pending_version": v.version_number,
+                    "change_note": v.change_note,
+                    "saved_by": v.author_user + (" (via AI)" if v.author_via_ai else ""),
+                    "saved": v.created_at.isoformat(timespec="minutes") + "Z",
+                }
+                for d, v in waiting
+                if type is None or d.type_key == type
+            ][:limit]
+        docs = await service.documents(s, collection_id=col_id, status=status, limit=limit)
+    pending = {d.id for d, _ in waiting if d.status != "draft"}
+    return [
+        {**_summary(d), "has_unpublished_changes": d.id in pending}
+        for d in docs
+        if type is None or d.type_key == type
+    ]
 
 
 @module.tool(permission="docs.read")
@@ -203,8 +229,8 @@ async def create_document(
     logins: list[dict[str, str]] | None = None,
 ) -> dict[str, Any]:
     """Create a new document. It is saved as a DRAFT: nobody sees it until a person
-    reviews and publishes it in the web UI. Tell the user the returned `url` so they
-    can review it. You cannot publish.
+    reviews and publishes it in the web UI. Pass on the returned `next` (it has the
+    `review_url`). You cannot publish.
 
     `collection` is a collection slug (see list_collections). Optional `type` is a
     published document type key (itops_list_types(module='docs')), with its `fields`.
@@ -225,10 +251,7 @@ async def create_document(
         await s.commit()
         await s.refresh(doc, ["collection"])
         result = _summary(doc)
-    return {
-        **result,
-        "next": f"Draft created. A person must review and publish it: {result['url']}",
-    }
+    return {**result, **module.review(f"/d/{doc.slug}", "the draft")}
 
 
 async def update_document(
@@ -261,7 +284,60 @@ async def update_document(
     return {
         **result,
         "version": version.version_number,
-        "next": f"Draft saved. A person must review and publish it: {result['url']}?draft=1",
+        **module.review(f"/d/{doc.slug}?draft=1", "the draft"),
+    }
+
+
+# Images are checked by their bytes, not by the name or type a client gives them.
+_IMAGE_SIGNATURES = (
+    (b"\x89PNG\r\n\x1a\n", "image/png"),
+    (b"\xff\xd8\xff", "image/jpeg"),
+    (b"GIF87a", "image/gif"),
+    (b"GIF89a", "image/gif"),
+)
+
+
+def image_type(data: bytes) -> str | None:
+    """PNG, JPEG, GIF or WebP by the file's first bytes; None for anything else."""
+    for signature, mime in _IMAGE_SIGNATURES:
+        if data.startswith(signature):
+            return mime
+    if data[:4] == b"RIFF" and data[8:12] == b"WEBP":
+        return "image/webp"
+    return None
+
+
+@module.tool(permission="docs.write", writes=True)
+async def upload_image(filename: str, content_base64: str, alt: str = "") -> dict[str, Any]:
+    """Upload a screenshot or other image (PNG, JPEG, GIF or WebP, base64) to use in a
+    document. Upload FIRST, then put the returned `markdown` where the image goes in the
+    `markdown` content of create_document or update_document (or the `html` in html content
+    or a text block): documents may only show images stored in IT-Ops. `alt` says what the
+    image shows, for people who can't see it (defaults to the file name). Nothing is
+    published: the image appears in the draft it's used in, and a person publishes that."""
+    try:
+        data = base64.b64decode(content_base64, validate=True)
+    except (binascii.Error, ValueError) as exc:
+        raise DocsError(
+            "content_base64 isn't valid base64: send the image's bytes, encoded."
+        ) from exc
+    mime = image_type(data)
+    if mime is None:
+        raise DocsError("That isn't a PNG, JPEG, GIF or WebP image (judged by its contents).")
+    name = PurePath(filename.replace("\\", "/")).name or "image"
+    try:
+        stored = await module.files.save(data, mime_type=mime, filename=name)
+    except FileRejected as exc:
+        raise DocsError(str(exc)) from exc
+    alt = " ".join(alt.split()) or PurePath(name).stem
+    md_alt = alt.replace("[", "(").replace("]", ")")
+    return {
+        "id": stored.id,
+        "url": stored.url,
+        "markdown": f"![{md_alt}]({stored.url})",
+        "html": f'<img src="{stored.url}" alt="{html_lib.escape(alt)}">',
+        "type": mime,
+        "size": stored.size_bytes,
     }
 
 

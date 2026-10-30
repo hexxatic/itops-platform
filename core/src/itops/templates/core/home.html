@@ -1,17 +1,20 @@
 {% extends "core/shell.html" %}
 {% import "core/components.html" as ui %}
 {% block content %}
-{{ ui.page_header(brand_name, "Installed modules") }}
-{% if modules %}
+{{ ui.page_header(brand_name) }}
+{% call ui.card("Waiting for you") %}
+  {% if waiting %}
+    {{ ui.table([("title", "What"), ("module", "Where")], waiting) }}
+  {% else %}
+    <p class="muted">Nothing is waiting for you: no AI drafts or proposals to approve, and no reviews or decisions due.</p>
+  {% endif %}
+{% endcall %}
 <div class="grid">
-  {% for m in modules %}
-  {% call ui.card(m.title or m.name) %}
-    <p class="muted">{{ m.description }}</p>
-    <p>{{ ui.badge("v" ~ m.version) }}</p>
+  {% for c in cards %}
+  {% call ui.card() %}
+    <h2 class="card-title"><a href="{{ c.href }}">{{ c.title }}</a>{% if c.count %} {{ ui.badge(c.count ~ " waiting", "warning") }}{% endif %}</h2>
+    {% if c.description %}<p class="muted">{{ c.description }}</p>{% endif %}
   {% endcall %}
   {% endfor %}
 </div>
-{% else %}
-{{ ui.empty_state("No modules installed", "Drop a module wheel into modules/ and run itops modules sync.") }}
-{% endif %}
 {% endblock %}

@@ -195,10 +195,29 @@ async def save(
     )
 
 
-async def publish(s: AsyncSession, who: Principal, post: Post) -> None:
+def stamp(post: Post) -> str:
+    """When the post last changed. The page sends it back with Publish or Discard draft,
+    so a draft changed after the page loaded (an AI connection may) isn't acted on unread."""
+    return post.updated_at.isoformat()
+
+
+def _check_reviewed(post: Post, reviewed: str | None, done: str, verb: str) -> None:
+    """``reviewed`` is the stamp the person's page showed; ``None`` only for callers
+    without a page (tests)."""
+    if reviewed is not None and reviewed != stamp(post):
+        raise NewsError(
+            f"Not {done}: {post.updated_by} changed this draft at "
+            f"{post.updated_at:%Y-%m-%d %H:%M} UTC, after you opened it. It's shown below: "
+            f"read it, then {verb} again."
+        )
+
+
+async def publish(s: AsyncSession, who: Principal, post: Post, *, reviewed: str | None) -> None:
+    """Publish a draft: ``reviewed`` is :func:`stamp` as the person's page showed it."""
     _require_human(who)
     if post.status != "draft":
         raise NewsError("Only a draft can be published.")
+    _check_reviewed(post, reviewed, "published", "publish")
     post.status = "published"
     post.published_by, post.published_at = who.user, utcnow()
     post.updated_by, post.updated_at = who.user, utcnow()
@@ -244,11 +263,14 @@ async def restore(s: AsyncSession, who: Principal, post: Post) -> None:
     await _audit(s, post, "restored", "Restored from the archive")
 
 
-async def delete_draft(s: AsyncSession, who: Principal, post: Post) -> None:
+async def delete_draft(
+    s: AsyncSession, who: Principal, post: Post, *, reviewed: str | None
+) -> None:
     """Throw away a draft that was never published (published posts are archived)."""
     _require_human(who)
     if post.status != "draft":
         raise NewsError("Only a draft can be deleted; archive a published post instead.")
+    _check_reviewed(post, reviewed, "discarded", "discard it")
     await _audit(s, post, "deleted", "Deleted the draft")
     await module.search.remove(s, kind="post", entity_id=str(post.id))
     await s.delete(post)
@@ -265,3 +287,15 @@ async def reindex_all() -> int:
             count += post.status != "draft"
         await s.commit()
     return count
+
+
+@module.service("waiting")
+async def waiting() -> list[dict[str, Any]]:
+    """What's waiting for the person looking (core's *Waiting for you*): drafts to publish."""
+    who = module.current_principal()
+    if who is None or not who.has("news.publish"):
+        return []
+    async with module.session() as s:
+        count = len(await drafts(s))
+    return [{"title": f"{count} news draft{'s' if count != 1 else ''} to publish",
+             "url": "/news/", "count": count}]  # fmt: skip

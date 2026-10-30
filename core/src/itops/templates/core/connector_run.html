@@ -1,8 +1,8 @@
 {% extends "core/shell.html" %}
 {% import "core/components.html" as ui %}
 {% block content %}
+{{ ui.breadcrumb([("Admin", "/admin"), ("Connectors", "/connectors"), (title, "/connectors/" ~ run.connector), ("Run " ~ run.id, None)]) }}
 {% call ui.page_header(title ~ ": run " ~ run.id, ("Dry run: nothing was changed. " if run.dry_run else "") ~ "Started " ~ started ~ (" by " ~ run.started_by if run.trigger == "manual" else " on schedule")) %}
-  {{ ui.button("Back to " ~ title, href="/connectors/" ~ run.connector) }}
 {% endcall %}
 {% if run.status == "running" %}
 {% include "core/connector_progress.html" %}
@@ -13,12 +13,18 @@
   {% if finished %}<span class="muted">Finished {{ finished }} · took {{ run.duration }}</span>{% endif %}
 </div>
 {{ ui.table([("outcome", "Outcome"), ("count", "Records")], counts, empty="Nothing counted yet.") }}
+{% for b in breakdown %}
+  {% call ui.disclosure(b.outcome|capitalize ~ " (" ~ b.count ~ ")") %}
+    {% if b.rows %}
+      {{ ui.table([("item", "Item"), ("detail", "What changed")], b.rows) }}
+      <p class="muted">{% if b.more %}Showing the first {{ b.rows|length }} of {{ b.rows|length + b.more }}. {% endif %}<a href="{{ b.download }}">Download all (CSV)</a></p>
+    {% endif %}
+    {% for url in b.missing %}<p><a href="{{ url }}">See the records no longer in {{ system }}</a></p>{% endfor %}
+  {% endcall %}
+{% endfor %}
+{% if breakdown %}<p class="muted">Unchanged items are only counted.{% if not run.dry_run %} Item lists are kept {{ item_days }} days.{% endif %}</p>{% endif %}
 {% endcall %}
 {% endif %}
 
-{% if problems %}
-{% call ui.card("Problems (" ~ problems|length ~ ")") %}
-  {{ ui.table([("item", "Item"), ("text", "Problem")], problems) }}
-{% endcall %}
-{% endif %}
+{% include "core/run_problems.html" %}
 {% endblock %}

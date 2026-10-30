@@ -32,7 +32,7 @@ from typing import Any
 from urllib.parse import urlsplit
 
 from fastapi import FastAPI, HTTPException, Request
-from fastapi.responses import FileResponse, HTMLResponse, Response
+from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, RedirectResponse, Response
 from mcp.server.auth.middleware.auth_context import get_access_token
 from mcp.server.auth.routes import create_auth_routes, create_protected_resource_routes
 from mcp.server.auth.settings import AuthSettings, ClientRegistrationOptions, RevocationOptions
@@ -47,6 +47,8 @@ from itops.core import auth, loader, migrations
 from itops.core.account import mount_account
 from itops.core.ai import AIService
 from itops.core.ai_connections_page import mount_ai_connections
+from itops.core.apps import AppTokens
+from itops.core.apps_page import mount_apps
 from itops.core.areas_page import mount_access
 from itops.core.audit_page import mount_audit
 from itops.core.bus import EventBus
@@ -57,7 +59,7 @@ from itops.core.db import make_engine, make_sessionmaker
 from itops.core.directory import check_user as check_directory
 from itops.core.directory import group_exists
 from itops.core.entra import AuthGate
-from itops.core.files import FileStore, is_image, may_read
+from itops.core.files import FileStore, holds_permission, is_image, may_read
 from itops.core.identity import Identity, PatVerifier, principal_from_access_token
 from itops.core.mcp import build_server
 from itops.core.oauth import SCOPE as OAUTH_SCOPE
@@ -67,12 +69,17 @@ from itops.core.ratelimit import Limiter, Limits, RateLimit
 from itops.core.registry import ServiceRegistry
 from itops.core.release import release_info, release_version
 from itops.core.runtime import Runtime
+from itops.core.sameorigin import SESSION_COOKIE, SameOrigin
 from itops.core.search import SearchIndex
+from itops.core.sites import SiteGate, Sites
 from itops.core.theme import AppearanceMiddleware
 from itops.core.theme import discover as discover_theme
 from itops.core.tools_page import mount_tools
 from itops.core.types_page import mount_types
 from itops.core.ui import build_templates, mount_ui
+from itops.core.waiting import WaitingBoard, WaitingMiddleware
+from itops.core.webapp import icons as app_icons
+from itops.core.webapp import manifest as app_manifest
 from itops.sdk import Module
 
 log = logging.getLogger("itops")
@@ -82,8 +89,13 @@ def create_app(
     settings: Settings | None = None,
     *,
     modules: list[Module] | None = None,
+    background: bool = True,
 ) -> FastAPI:
-    """Build the app. ``modules`` overrides entry-point discovery (tests)."""
+    """Build the app. ``modules`` overrides entry-point discovery (tests).
+
+    ``background=False`` is for command-line maintenance (``itops search rebuild``) beside
+    the running service: no schedulers, no re-index at startup, and runs the service has
+    going aren't marked interrupted."""
     settings = settings or get_settings()
     auth.configure(settings)
 
@@ -158,8 +170,15 @@ def create_app(
     for problem in identity.set_declared_permissions(
         (p for mod in loaded for p in mod.manifest.permissions),
         (p for mod in loaded for p in mod.manifest.group_granted_permissions),
+        (p for mod in loaded for p in mod.manifest.everyone_permissions),
     ):
         log.warning("permissions: %s", problem)
+    sites = Sites.build(settings, loaded)  # ADR 0027
+    for problem in sites.problems(loaded):
+        log.warning("sites: %s", problem)
+    runtime.search.scope = sites.search_scope
+    declared = [p for mod in loaded for p in mod.manifest.permissions]
+    app_tokens = AppTokens(sessionmaker, runtime.audit, lambda: declared)
     entra = settings.auth_mode == "entra"
     mcp_public = settings.mcp_public_url.rstrip("/")
     oauth = (
@@ -174,6 +193,7 @@ def create_app(
         else None
     )
     allowed_hosts = list(settings.allowed_hosts)
+    allowed_hosts += sorted(sites.hosts)
     if mcp_public:
         allowed_hosts.append(urlsplit(mcp_public).netloc)
     if entra:
@@ -217,24 +237,25 @@ def create_app(
                 if applied:
                     log.info("migrated %s: %s", mod.name, applied)
         await _seed_starter_types(runtime, loaded)
-        if interrupted := await runtime.connectors.recover():
-            log.warning("marked %d interrupted connector run(s) as failed", interrupted)
-        if interrupted := await runtime.actions.recover():
-            log.warning("marked %d interrupted tool run(s) as failed", interrupted)
-        if interrupted := await runtime.jobs.recover():
-            log.warning("marked %d interrupted job run(s) as failed", interrupted)
-        if interrupted := await runtime.suggestions.recover():
-            log.warning("marked %d interrupted AI suggestion run(s) as failed", interrupted)
+        if background:
+            if interrupted := await runtime.connectors.recover():
+                log.warning("marked %d interrupted connector run(s) as failed", interrupted)
+            if interrupted := await runtime.actions.recover():
+                log.warning("marked %d interrupted tool run(s) as failed", interrupted)
+            if interrupted := await runtime.jobs.recover():
+                log.warning("marked %d interrupted job run(s) as failed", interrupted)
+            if interrupted := await runtime.suggestions.recover():
+                log.warning("marked %d interrupted AI suggestion run(s) as failed", interrupted)
         await _index_tools(runtime)
-        reindexing = asyncio.create_task(_reindex_changed(runtime, loaded))
+        reindexing = asyncio.create_task(_reindex_changed(runtime, loaded)) if background else None
         scheduler = (
             asyncio.create_task(runtime.connectors.scheduler())
-            if settings.run_connectors and runtime.connectors.all()
+            if background and settings.run_connectors and runtime.connectors.all()
             else None
         )
         jobs = (
             asyncio.create_task(runtime.jobs.scheduler())
-            if settings.run_jobs and runtime.jobs.all()
+            if background and settings.run_jobs and runtime.jobs.all()
             else None
         )
         async with mcp_server.session_manager.run():
@@ -244,6 +265,10 @@ def create_app(
                 task.cancel()
                 with contextlib.suppress(asyncio.CancelledError):
                     await task
+        # Runs still going are stopped and recorded as stopped (not as succeeded, and not
+        # left running for the next start to mark failed) while the database is still here.
+        await runtime.connectors.stop()
+        await runtime.jobs.stop()
         await runtime.bus.drain()
         await engine.dispose()
 
@@ -278,12 +303,14 @@ def create_app(
             row = await runtime.files.get(session, file_id)
         if row is None:
             raise HTTPException(status_code=404)
-        try:
-            auth.require(row.read_permission)
-        except auth.PermissionDenied as exc:
-            raise HTTPException(status_code=403, detail=str(exc)) from exc
+        shared = runtime.registry.get(f"{row.module}.shared_file_permission")
+        if not await holds_permission(row, auth.current(), shared):
+            try:
+                auth.require(row.read_permission)  # says what's missing (and as whom)
+            except auth.PermissionDenied as exc:
+                raise HTTPException(status_code=403, detail=str(exc)) from exc
         visible = runtime.registry.get(f"{row.module}.visible_entity")
-        if not await may_read(row, auth.current(), visible):
+        if not await may_read(row, auth.current(), visible, shared):
             raise HTTPException(status_code=404)
         return FileResponse(
             runtime.files.resolve(row.storage_path),
@@ -300,7 +327,29 @@ def create_app(
         )
 
     theme = discover_theme(settings.theme)
-    templates = build_templates(loaded, settings, theme)
+    # The Admin page and menu (and the buttons on Account): each shown to who holds it.
+    admin_links = [
+        {"label": "Connectors", "href": "/connectors", "permission": "itops.connectors",
+         "description": "Data in and out: runs, schedules, problems, records gone from a "
+         "source."},
+        {"label": "Audit trail", "href": "/audit", "permission": "itops.audit",
+         "description": "Who changed what, and when, across IT-Ops."},
+        {"label": "AI connections", "href": "/ai-connections", "permission": "itops.audit",
+         "description": "Everyone's AI tools and tokens; cut one off."},
+        {"label": "Apps", "href": "/apps", "permission": "itops.audit",
+         "description": "Tokens for other internal apps that read IT-Ops."},
+    ] + [
+        {"label": f"{m.manifest.title or m.name} types", "href": f"/{m.name}/types",
+         "permission": f"{m.name}.types.draft",
+         "description": f"The record types {m.manifest.title or m.name} uses, and drafts "
+         "waiting to be published."}
+        for m in loaded
+        if m.manifest.uses_types
+    ] + [
+        {"label": "Design system", "href": "/_design", "permission": "itops.audit",
+         "description": "Every core component, for building pages."},
+    ]  # fmt: skip
+    templates = build_templates(loaded, settings, theme, admin_links, sites)
 
     @app.get("/theme/{filename}", include_in_schema=False)
     async def theme_file(filename: str) -> Response:  # pyright: ignore[reportUnusedFunction]
@@ -310,6 +359,18 @@ def create_app(
             raise HTTPException(status_code=404)
         return Response(theme.read(filename), media_type=media,
                         headers={"Cache-Control": "public, max-age=86400"})  # fmt: skip
+
+    @app.get("/manifest.webmanifest", include_in_schema=False)
+    async def web_manifest() -> Response:  # pyright: ignore[reportUnusedFunction]
+        """What lets a browser install this site as an app (core/webapp.py); public."""
+        return JSONResponse(app_manifest(sites.title(), theme),
+                            media_type="application/manifest+json",
+                            headers={"Cache-Control": "public, max-age=3600"})  # fmt: skip
+
+    @app.get("/favicon.ico", include_in_schema=False)
+    async def favicon() -> Response:  # pyright: ignore[reportUnusedFunction]
+        """Browsers ask for /favicon.ico whatever the page links: the smallest app icon."""
+        return RedirectResponse(app_icons(theme)[0][0], status_code=301)
 
     @app.get("/search", response_class=HTMLResponse, include_in_schema=False)
     async def search_page(  # pyright: ignore[reportUnusedFunction]
@@ -338,20 +399,7 @@ def create_app(
             },
         )
 
-    admin_links = [
-        {"label": "Audit trail", "href": "/audit", "permission": "itops.audit"},
-        {"label": "Connectors", "href": "/connectors", "permission": "itops.connectors"},
-        {"label": "AI connections", "href": "/ai-connections", "permission": "itops.audit"},
-    ] + [
-        {
-            "label": f"{m.manifest.title or m.name} types",
-            "href": f"/{m.name}/types",
-            "permission": f"{m.name}.types.draft",
-        }
-        for m in loaded
-        if m.manifest.uses_types
-    ]
-    mount_account(app, templates, settings, identity, admin_links, oauth)
+    mount_account(app, templates, settings, identity, admin_links, oauth, sites)
     if oauth is not None:
         # ADR 0013: the OAuth endpoints and discovery documents, at the root of the public
         # MCP host (the SDK's handlers; IT-Ops' storage and Entra sign-in behind them).
@@ -373,6 +421,10 @@ def create_app(
             )
         )
         mount_oauth(app, templates, settings, oauth)
+
+    async def known_token(token: str) -> bool:
+        return await identity.token_known(token) or await app_tokens.known(token)
+
     limiter = Limiter(
         Limits(
             sign_in_per_minute=settings.rate_sign_in_per_minute,
@@ -380,31 +432,64 @@ def create_app(
             token_per_minute=settings.rate_token_per_minute,
         ),
         trusted_proxies=settings.trusted_proxies,
-        known=identity.token_known,
+        known=known_token,
     )
     app.state.limiter = limiter
     mount_ai_connections(app, templates, identity, oauth, limiter)
+    mount_apps(app, templates, app_tokens)
     mount_access(app, templates, runtime)
     mount_audit(app, templates, runtime)
     mount_connectors(app, templates, runtime)
     mount_tools(app, templates, runtime)
     mount_types(app, templates, runtime, loaded)
-    mount_ui(app, templates, loaded)
+
+    async def tool_requests() -> list[dict[str, Any]]:
+        """AI's requests to run a tool, for the people who may run it (ADR 0011)."""
+        who = auth.current()
+        mine = {a.key for a in runtime.actions.visible(who)}
+        n = sum(1 for r in await runtime.actions.requests() if r.action in mine)
+        title = f"{n} tool run{' request' if n == 1 else ' requests'} from AI to run or decline"
+        return [{"title": title, "url": "/tools", "count": n}]
+
+    typed = [(m.name, m.manifest.title or m.name) for m in loaded if m.manifest.uses_types]
+
+    async def draft_types() -> list[dict[str, Any]]:
+        """Record-type drafts (often from AI) for the admins who publish them (ADR 0008)."""
+        who = auth.current()
+        out: list[dict[str, Any]] = []
+        if runtime.sessionmaker is None or not typed:
+            return out
+        async with runtime.sessionmaker() as s:
+            for name, title in typed:
+                if who is None or not who.has(f"{name}.types.approve"):
+                    continue
+                views = await runtime.types.list_types(s, name, include_drafts=True)
+                n = sum(1 for v in views if v.draft is not None)
+                out.append({"title": f"{n} {title} type draft{'s' if n != 1 else ''} to publish",
+                            "url": f"/{name}/types", "count": n, "module": name})  # fmt: skip
+        return out
+
+    board = WaitingBoard(runtime.registry.get, [m.name for m in loaded],
+                         {"tools": tool_requests, "types": draft_types})  # fmt: skip
+    mount_ui(app, templates, loaded, board, sites, identity)
     app.mount("/mcp", mcp_app)
 
     # Last added runs first: sessions, then the gate that turns them into a principal, and
     # the person's light/dark choice.
+    app.add_middleware(WaitingMiddleware, board=board)  # innermost: after the auth gate
     app.add_middleware(AppearanceMiddleware)
-    app.add_middleware(AuthGate, settings=settings, identity=identity)
+    app.add_middleware(AuthGate, settings=settings, identity=identity, apps=app_tokens, sites=sites)
+    app.add_middleware(SiteGate, sites=sites)  # which site, before who
     secret = settings.secret_key.get_secret_value() or secrets.token_urlsafe(32)  # dev: throwaway
     app.add_middleware(
         SessionMiddleware,
         secret_key=secret,
-        session_cookie="itops_session",
+        session_cookie=SESSION_COOKIE,
         max_age=settings.session_hours * 3600,
-        same_site="lax",  # cross-site POSTs arrive without the cookie (CSRF)
+        same_site="lax",  # other sites' POSTs arrive without it; SameOrigin covers our domain
         https_only=not settings.is_dev,
     )
+    app.add_middleware(SameOrigin, settings=settings, hosts=sites.hosts)  # from our own pages
     app.add_middleware(RateLimit, limiter=limiter)  # refuses before any work
     app.add_middleware(McpWithoutSlash)  # outermost
     return app

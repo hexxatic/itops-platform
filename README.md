@@ -3,7 +3,7 @@
 A small, modular platform for internal IT applications: a core (sign-in, permissions, audit
 trail, search with local embeddings, files, record types, connectors, tool actions, scheduled
 jobs, dashboards and CSV/Excel export, MCP for AI clients with OAuth) plus drop-in modules
-(`modules/assets`, `modules/contracts`, `modules/docs`, `modules/news`, `modules/reports`) that share the plumbing and look identical.
+(`modules/assets`, `modules/budget`, `modules/contracts`, `modules/docs`, `modules/kb`, `modules/news`, `modules/reports`) that share the plumbing and look identical.
 
 This is an export of the generic part of a larger internal repository: company-specific
 modules, configuration and deployment settings are not included.
@@ -15,4 +15,4 @@ uv run itops new module x   # scaffold a module that follows the rules
 uv run pytest -q            # tests (SQL Server needed for the database tests)
 ```
 
-Exported 2026-10-14 from 15b2a1a.
+Exported 2026-10-29 from dae31c6.

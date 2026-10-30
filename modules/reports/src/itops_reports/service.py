@@ -7,6 +7,9 @@ through here.
   time column (trends and retention) and an optional retention period.
 - **Money columns** need ``reports.costs`` and never reach AI connections: they're left out
   of rows, measures and exports for anyone else.
+- **Rows AI proposes** wait as a batch on the dataset's page until a person approves (adds
+  them as their own) or rejects them. AI can propose a typed-in dataset too (a person with
+  ``reports.publish`` creates it), with rows that wait for it.
 - **Report definitions** are published by people with ``reports.publish``; an AI connection
   can only save a draft, which such a person publishes or discards.
 - **Areas** (ADR 0012): a dataset or a report can be restricted to AD groups. A hidden
@@ -21,20 +24,21 @@ import io
 import json
 import re
 from dataclasses import dataclass
-from typing import Any
+from typing import Any, cast
 
 from sqlalchemy import delete, func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from itops.sdk import Principal, TypeProblem
-from itops.sdk.types import TypeDef
+from itops.sdk.types import TypeDef, validate_values
 from itops_reports.app import module
 from itops_reports.engine import Item, ReportConfig, ReportProblem, parse_config
-from itops_reports.models import Dataset, Definition, Row, utcnow
+from itops_reports.models import Dataset, DatasetProposal, Definition, Proposal, Row, utcnow
 
 KEY_RE = re.compile(r"^[a-z][a-z0-9-]{1,59}$")
 MODES = {"manual": "Typed in by people", "synced": "Written by a connector"}
 MAX_PASTE_ROWS = 2000
+MAX_UPSERT_ROWS = 500
 
 
 class ReportsError(ValueError):
@@ -327,7 +331,9 @@ async def add_row(s: AsyncSession, ds: Dataset, values: dict[str, Any]) -> Row:
     p = _require("reports.write")
     _manual(ds)
     if p.via_ai:
-        raise ReportsError("AI connections can't add rows yet: a person types them in.")
+        raise ReportsError(
+            "AI connections propose rows instead (reports_propose_rows): a person approves them."
+        )
     clean = await _validated(ds, values)
     r = Row(
         dataset_id=ds.id,
@@ -443,11 +449,26 @@ async def read_paste(ds: Dataset, text: str) -> Pasted:
 async def save_paste(s: AsyncSession, ds: Dataset, text: str) -> int:
     p = _require("reports.write")
     if p.via_ai:
-        raise ReportsError("AI connections can't add rows: a person pastes them.")
+        raise ReportsError(
+            "AI connections propose rows instead (reports_propose_rows): a person approves them."
+        )
     pasted = await read_paste(ds, text)
     if pasted.problems:
         raise ReportsError("Fix these first: " + "; ".join(pasted.problems[:10]))
-    for values in pasted.rows:
+    await _insert(s, ds, pasted.rows)
+    await module.audit.record(
+        s,
+        "row.pasted",
+        kind="dataset",
+        entity_id=ds.key,
+        title=ds.title,
+        summary=f"Added {len(pasted.rows)} rows (pasted from a spreadsheet)",
+    )
+    return len(pasted.rows)
+
+
+async def _insert(s: AsyncSession, ds: Dataset, rows: list[dict[str, Any]]) -> None:
+    for values in rows:
         s.add(
             Row(
                 dataset_id=ds.id,
@@ -458,18 +479,303 @@ async def save_paste(s: AsyncSession, ds: Dataset, text: str) -> int:
             )
         )
     await s.flush()
+    module.publish(
+        "rows_changed", {"dataset": ds.key, "added": len(rows), "changed": 0, "deleted": 0}
+    )
+
+
+# ---- rows AI proposes ---
+
+
+async def propose_rows(
+    s: AsyncSession,
+    ds: Dataset,
+    rows: list[dict[str, Any]],
+    note: str,
+    *,
+    waiting_on: DatasetProposal | None = None,
+) -> Proposal:
+    """AI (or anyone with reports.write) proposes rows for a typed-in dataset; nothing is
+    added until a person approves them. Columns are named by key or label. Money columns may
+    be given: proposing a value isn't seeing one, and AI never reads them back. For a dataset
+    that is only proposed (``waiting_on``), ``ds`` is ``proposed_dataset(...)`` and the rows
+    wait until it's created."""
+    _require("reports.write")
+    _manual(ds)
+    note = " ".join(note.split())[:1000]
+    if not note:
+        raise ReportsError("Say where the rows come from (note), so the reviewer can check them.")
+    if not rows:
+        raise ReportsError("Propose at least one row.")
+    if len(rows) > MAX_PASTE_ROWS:
+        raise ReportsError(f"At most {MAX_PASTE_ROWS} rows at once.")
+    definition = (await columns(ds)).definition
+    by_name = {f.label.lower(): f.key for f in definition.fields} | {
+        f.key.lower(): f.key for f in definition.fields
+    }
+    clean: list[dict[str, Any]] = []
+    problems: list[str] = []
+    for n, given in enumerate(rows, start=1):
+        raw: dict[str, Any] = {}
+        for name, value in given.items():
+            key = by_name.get(str(name).strip().lower())
+            if key is None:
+                problems.append(f"Row {n}: unknown column “{name}”")
+            elif value not in (None, ""):
+                raw[key] = value.strip() if isinstance(value, str) else value
+        try:
+            clean.append(await module.types.validate(ds.type_key, raw))
+        except TypeProblem as exc:
+            problems.append(f"Row {n}: {exc}")
+    if problems:
+        more = f" (and {len(problems) - 10} more)" if len(problems) > 10 else ""
+        raise ReportsError("Fix these first: " + "; ".join(problems[:10]) + more)
+    p = Proposal(
+        dataset_id=None if waiting_on else ds.id,
+        dataset_proposal_id=waiting_on.id if waiting_on else None,
+        rows=json.dumps(clean),
+        row_count=len(clean),
+        note=note,
+        proposed_by=_who(),
+    )
+    s.add(p)
+    await s.flush()
     await module.audit.record(
         s,
-        "row.pasted",
+        "rows.proposed",
         kind="dataset",
         entity_id=ds.key,
         title=ds.title,
-        summary=f"Added {len(pasted.rows)} rows (pasted from a spreadsheet)",
+        summary=f"Proposed {len(clean)} rows (waiting for a person to approve them"
+        + (", once the dataset is created)" if waiting_on else ")"),
+        details={"proposal": p.id},
     )
-    module.publish(
-        "rows_changed", {"dataset": ds.key, "added": len(pasted.rows), "changed": 0, "deleted": 0}
+    return p
+
+
+def proposed_rows(p: Proposal) -> list[dict[str, Any]]:
+    return list(json.loads(p.rows))
+
+
+async def proposals(s: AsyncSession, ds: Dataset | None = None) -> list[tuple[Proposal, Dataset]]:
+    """Pending proposals in datasets the viewer may see, oldest first."""
+    hidden = await _hidden_datasets()
+    q = (
+        select(Proposal, Dataset)
+        .join(Dataset, Proposal.dataset_id == Dataset.id)
+        .where(Proposal.status == "pending")
+        .order_by(Proposal.proposed_at, Proposal.id)
     )
-    return len(pasted.rows)
+    if ds is not None:
+        q = q.where(Proposal.dataset_id == ds.id)
+    return [(p, d) for p, d in (await s.execute(q)).tuples() if d.key not in hidden]
+
+
+async def get_proposal(s: AsyncSession, proposal_id: int) -> tuple[Proposal, Dataset] | None:
+    p = await s.get(Proposal, proposal_id)
+    if p is None or p.dataset_id is None:
+        return None
+    ds = await s.get(Dataset, p.dataset_id)
+    if ds is None or ds.key in await _hidden_datasets():
+        return None
+    return p, ds
+
+
+async def already_in(s: AsyncSession, ds: Dataset, rows: list[dict[str, Any]]) -> int:
+    """How many of these rows match a row the dataset already has (to catch a batch proposed
+    twice)."""
+
+    def canon(values: dict[str, Any]) -> str:
+        return json.dumps(values, sort_keys=True, default=str)
+
+    have = {
+        canon(json.loads(v))
+        for v in (await s.execute(select(Row.values).where(Row.dataset_id == ds.id))).scalars()
+    }
+    return sum(canon(r) in have for r in rows)
+
+
+async def has_money(ds: Dataset, p: Proposal) -> bool:
+    definition = (await columns(ds)).definition
+    money = {f.key for f in definition.fields if f.kind == "money"}
+    return any(r.get(k) not in (None, "") for r in proposed_rows(p) for k in money)
+
+
+def _decide(p: Proposal | DatasetProposal, status: str) -> None:
+    if p.status != "pending":
+        raise ReportsError(f"That proposal was already {p.status}.")
+    p.status, p.decided_by, p.decided_at = status, _who(), utcnow()
+
+
+async def approve_proposal(s: AsyncSession, p: Proposal, ds: Dataset) -> int:
+    """A person adds the proposed rows, as their own (checked again against the columns)."""
+    _require("reports.publish", human=True)
+    _manual(ds)
+    if await has_money(ds, p) and not can_see_money():
+        raise ReportsError("These rows include money: someone who can see costs approves them.")
+    _decide(p, "approved")
+    rows: list[dict[str, Any]] = []
+    for n, values in enumerate(proposed_rows(p), start=1):
+        try:
+            rows.append(await module.types.validate(ds.type_key, values))
+        except TypeProblem as exc:
+            raise ReportsError(
+                f"Row {n} no longer fits the dataset's columns: {exc}. Reject it instead."
+            ) from exc
+    await _insert(s, ds, rows)
+    await module.audit.record(
+        s,
+        "rows.approved",
+        kind="dataset",
+        entity_id=ds.key,
+        title=ds.title,
+        summary=f"Added {len(rows)} rows proposed by {p.proposed_by}",
+        details={"proposal": p.id},
+    )
+    return len(rows)
+
+
+async def reject_proposal(s: AsyncSession, p: Proposal, ds: Dataset) -> None:
+    _require("reports.publish", human=True)
+    _decide(p, "rejected")
+    await module.audit.record(
+        s,
+        "rows.rejected",
+        kind="dataset",
+        entity_id=ds.key,
+        title=ds.title,
+        summary=f"Rejected {p.row_count} rows proposed by {p.proposed_by}",
+        details={"proposal": p.id},
+    )
+
+
+# ---- datasets AI proposes ---
+
+
+def dataset_spec(dp: DatasetProposal) -> DatasetInput:
+    return DatasetInput(**json.loads(dp.spec))
+
+
+def proposed_dataset(dp: DatasetProposal) -> Dataset:
+    """A stand-in (never saved) for checking rows proposed for a dataset not yet created."""
+    spec = dataset_spec(dp)
+    return Dataset(
+        key=dp.key,
+        title=spec.title,
+        type_key=spec.type_key,
+        mode="manual",
+        time_field=spec.time_field,
+    )
+
+
+async def propose_dataset(s: AsyncSession, data: DatasetInput, note: str) -> DatasetProposal:
+    """AI (or anyone with reports.write) proposes a typed-in dataset; a person with
+    reports.publish creates it. Checked now as if it were being created."""
+    _require("reports.write")
+    if data.mode != "manual":
+        raise ReportsError("Only typed-in datasets can be proposed: connectors create their own.")
+    note = " ".join(note.split())[:1000]
+    if not note:
+        raise ReportsError("Say what the dataset is for (note), so the reviewer can check it.")
+    title, _, description, time_field, retention = await _clean_dataset(data)
+    key = data.key or slug(title)
+    if not KEY_RE.match(key):
+        raise ReportsError("A dataset key is lowercase letters, digits and dashes.")
+    if await _dataset(s, key) is not None:
+        raise ReportsError(f"There's already a dataset called '{key}'.")
+    if await pending_dataset(s, key) is not None:
+        raise ReportsError(f"A dataset called '{key}' is already proposed.")
+    spec = {
+        "title": title,
+        "key": key,
+        "type_key": data.type_key,
+        "description": description,
+        "time_field": time_field,
+        "retention_days": retention,
+    }
+    dp = DatasetProposal(key=key, spec=json.dumps(spec), note=note, proposed_by=_who())
+    s.add(dp)
+    await s.flush()
+    await module.audit.record(
+        s,
+        "dataset.proposed",
+        kind="dataset",
+        entity_id=key,
+        title=title,
+        summary=f"Proposed dataset “{title}” (waiting for an admin to create it)",
+        details={"dataset_proposal": dp.id},
+    )
+    return dp
+
+
+async def pending_dataset(s: AsyncSession, key: str) -> DatasetProposal | None:
+    q = select(DatasetProposal).where(
+        DatasetProposal.key == key, DatasetProposal.status == "pending"
+    )
+    return (await s.execute(q)).scalars().first()
+
+
+async def dataset_proposals(s: AsyncSession) -> list[DatasetProposal]:
+    q = (
+        select(DatasetProposal)
+        .where(DatasetProposal.status == "pending")
+        .order_by(DatasetProposal.proposed_at, DatasetProposal.id)
+    )
+    return list((await s.execute(q)).scalars())
+
+
+async def get_dataset_proposal(s: AsyncSession, proposal_id: int) -> DatasetProposal | None:
+    return await s.get(DatasetProposal, proposal_id)
+
+
+async def rows_waiting(s: AsyncSession) -> list[tuple[Proposal, DatasetProposal]]:
+    """Row batches waiting for a proposed dataset to be created."""
+    q = (
+        select(Proposal, DatasetProposal)
+        .join(DatasetProposal, Proposal.dataset_proposal_id == DatasetProposal.id)
+        .where(Proposal.status == "pending", Proposal.dataset_id.is_(None))
+        .order_by(Proposal.proposed_at, Proposal.id)
+    )
+    return [(p, dp) for p, dp in (await s.execute(q)).tuples()]
+
+
+async def approve_dataset(s: AsyncSession, dp: DatasetProposal) -> Dataset:
+    """Creates the dataset as the person approving; rows proposed for it move to its page,
+    still waiting for their own approval."""
+    _require("reports.publish", human=True)
+    _decide(dp, "approved")
+    ds = await _create_dataset(s, dataset_spec(dp))
+    for p, _ in await rows_waiting(s):
+        if p.dataset_proposal_id == dp.id:
+            p.dataset_id = ds.id
+    await module.audit.record(
+        s,
+        "dataset.proposal_approved",
+        kind="dataset",
+        entity_id=ds.key,
+        title=ds.title,
+        summary=f"Created the dataset proposed by {dp.proposed_by}",
+        details={"dataset_proposal": dp.id},
+    )
+    return ds
+
+
+async def reject_dataset(s: AsyncSession, dp: DatasetProposal) -> None:
+    """Rejects the dataset and any rows waiting for it."""
+    _require("reports.publish", human=True)
+    _decide(dp, "rejected")
+    for p, _ in await rows_waiting(s):
+        if p.dataset_proposal_id == dp.id:
+            _decide(p, "rejected")
+    await module.audit.record(
+        s,
+        "dataset.proposal_rejected",
+        kind="dataset",
+        entity_id=dp.key,
+        title=dataset_spec(dp).title,
+        summary=f"Rejected the dataset proposed by {dp.proposed_by}",
+        details={"dataset_proposal": dp.id},
+    )
 
 
 # ---- report definitions ---
@@ -593,10 +899,32 @@ async def save_definition(
     return d
 
 
-async def publish_draft(s: AsyncSession, d: Definition, ds: Dataset) -> None:
+def stamp(d: Definition) -> str:
+    """When the report last changed. The draft view sends it back with Publish or Discard
+    draft, so a draft changed after the page loaded (an AI connection may) isn't acted on
+    unread."""
+    return d.updated_at.isoformat()
+
+
+def _check_reviewed(d: Definition, reviewed: str | None, done: str, verb: str) -> None:
+    """``reviewed`` is the stamp the person's page showed; ``None`` only for callers
+    without a page (tests)."""
+    if reviewed is not None and reviewed != stamp(d):
+        raise ReportsError(
+            f"Not {done}: {d.draft_by or d.updated_by} changed this report at "
+            f"{d.updated_at:%Y-%m-%d %H:%M} UTC, after you opened it. The draft is shown "
+            f"below: check it, then {verb} again."
+        )
+
+
+async def publish_draft(
+    s: AsyncSession, d: Definition, ds: Dataset, *, reviewed: str | None
+) -> None:
+    """Publish the drafted changes: ``reviewed`` is :func:`stamp` as the draft view showed it."""
     _require("reports.publish", human=True)
     if not d.draft_config:
         raise ReportsError("There's no draft to publish.")
+    _check_reviewed(d, reviewed, "published", "publish")
     await config_of(d, ds, draft=True)  # still fits the dataset
     d.config, d.draft_config, d.draft_by, d.draft_via_ai = d.draft_config, None, None, False
     d.published_by, d.published_at, d.updated_by, d.updated_at = _who(), utcnow(), _who(), utcnow()
@@ -610,9 +938,10 @@ async def publish_draft(s: AsyncSession, d: Definition, ds: Dataset) -> None:
     )
 
 
-async def discard_draft(s: AsyncSession, d: Definition) -> bool:
+async def discard_draft(s: AsyncSession, d: Definition, *, reviewed: str | None) -> bool:
     """Drops the draft; a report that was never published goes with it. True if deleted."""
     _require("reports.publish", human=True)
+    _check_reviewed(d, reviewed, "discarded", "discard it")
     if d.config is None:
         await s.delete(d)
         await module.audit.record(
@@ -750,6 +1079,107 @@ async def upsert(dataset: str, source_key: str, values: dict[str, Any]) -> dict[
     return {"outcome": outcome}
 
 
+@module.service("upsert_many")
+async def upsert_many(dataset: str, rows: list[dict[str, Any]]) -> dict[str, Any]:
+    """Connectors only: validate and upsert one bounded page of synced rows in one
+    transaction. Each item is {source_key, values}. Returns per-outcome counts, or one
+    invalid result; a rejected page writes nothing."""
+    run = module.refs.run
+    if run is None:
+        raise ReportsError("Only a connector run writes synced rows.")
+    if "*" not in (module.refs.owns("rows") or frozenset()):
+        raise ReportsError(f'{run.connector} must declare owns = {{ "reports.rows" = ["*"] }}.')
+    if len(rows) > MAX_UPSERT_ROWS:
+        return {
+            "outcome": "invalid",
+            "problem": f"A connector page may contain at most {MAX_UPSERT_ROWS} rows.",
+        }
+    if not rows:
+        return {"counts": {}}
+
+    source_rows: list[tuple[str, dict[str, Any]]] = []
+    seen: set[str] = set()
+    for item in rows:
+        source_key = str(item.get("source_key", ""))[:200]
+        if not source_key or source_key in seen:
+            return {"outcome": "invalid", "problem": "A page has a missing or repeated source key."}
+        seen.add(source_key)
+        values = item.get("values")
+        if not isinstance(values, dict):
+            return {"outcome": "invalid", "problem": f"{source_key}: row values must be an object."}
+        source_rows.append((source_key, cast(dict[str, Any], values)))
+
+    async with module.session() as s:
+        ds = await _dataset(s, dataset)
+        if ds is None:
+            return {
+                "outcome": "invalid",
+                "problem": f"No dataset '{dataset}' (call reports.ensure_dataset first).",
+            }
+        if ds.mode != "synced":
+            return {
+                "outcome": "invalid",
+                "problem": f"'{dataset}' is typed in by people, not synced.",
+            }
+        type_view = await module.types.get(ds.type_key)
+        if type_view is None or type_view.published is None:
+            return {"outcome": "invalid", "problem": "The dataset's column type is not published."}
+        definition = type_view.published.definition
+
+        cleaned: list[tuple[str, dict[str, Any], str]] = []
+        for source_key, values in source_rows:
+            try:
+                value = validate_values(definition, values)
+            except TypeProblem as exc:
+                return {"outcome": "invalid", "problem": f"{source_key}: {exc}"}
+            cleaned.append((source_key, value, module.refs.fingerprint(value)))
+
+        keys = [source_key for source_key, _, _ in cleaned]
+        existing = {
+            row.source_key: row
+            for row in (
+                await s.execute(
+                    select(Row).where(Row.dataset_id == ds.id, Row.source_key.in_(keys))
+                )
+            ).scalars()
+        }
+        counts = {"created": 0, "updated": 0, "unchanged": 0}
+        changed = False
+        for source_key, value, fingerprint in cleaned:
+            row = existing.get(source_key)
+            if row is not None and row.fingerprint == fingerprint:
+                counts["unchanged"] += 1
+                continue
+            outcome = "updated" if row is not None else "created"
+            counts[outcome] += 1
+            if run.dry_run:
+                continue
+            serialized = json.dumps(value)
+            if row is None:
+                s.add(
+                    Row(
+                        dataset_id=ds.id,
+                        source_key=source_key,
+                        fingerprint=fingerprint,
+                        values=serialized,
+                        row_time=row_time(ds, value),
+                        created_by=run.connector,
+                        updated_by=run.connector,
+                    )
+                )
+            else:
+                row.values, row.fingerprint = serialized, fingerprint
+                row.row_time, row.updated_by, row.updated_at = (
+                    row_time(ds, value),
+                    run.connector,
+                    utcnow(),
+                )
+            changed = True
+        if changed:
+            await s.commit()
+    return {"counts": counts}
+
+
 @module.service("rows")
 async def rows(dataset: str, *, since: dt.datetime | None = None) -> list[dict[str, Any]]:
     """A dataset's rows for another module (e.g. budget): values plus ``_time``. Respects
@@ -760,6 +1190,26 @@ async def rows(dataset: str, *, since: dt.datetime | None = None) -> list[dict[s
             return []
         found, _ = await items(s, ds, since=since)
     return [{**it.values, "_time": it.time} for it in found]
+
+
+@module.service("read_dataset")
+async def read_dataset(key: str, *, since: dt.datetime | None = None) -> dict[str, Any]:
+    """Permission-checked rows with explicit availability and truncation for dashboards.
+
+    Missing and hidden datasets have the same response. Unlike rows(), this preserves
+    the engine's truncation signal so callers never mistake a partial total for a full one.
+    """
+    _require("reports.read")
+    async with module.session() as s:
+        ds = await dataset_or_none(s, key)
+        if ds is None:
+            return {"available": False, "rows": [], "truncated": False}
+        found, truncated = await items(s, ds, since=since)
+    return {
+        "available": True,
+        "truncated": truncated,
+        "rows": [{**it.values, "_time": it.time} for it in found],
+    }
 
 
 async def dataset_or_none(s: AsyncSession, key: str) -> Dataset | None:
@@ -806,3 +1256,25 @@ async def retention() -> str | None:
                 removed.append(f"{ds.title}: {n}")
             await s.commit()
     return ("Removed old rows: " + "; ".join(removed)) if removed else None
+
+
+@module.service("waiting")
+async def waiting() -> list[dict[str, Any]]:
+    """What's waiting for the person looking (core's *Waiting for you*): AI's report drafts
+    and proposed datasets to publish, and proposed rows to add."""
+    who = module.current_principal()
+    out: list[dict[str, Any]] = []
+    if who is None:
+        return out
+    async with module.session() as s:
+        if who.has("reports.publish"):
+            n = sum(1 for d, _ in await definitions(s, drafts=True) if d.draft_config)
+            out.append({"title": f"{n} report draft{'s' if n != 1 else ''} to publish",
+                        "url": "/reports/", "count": n})  # fmt: skip
+            n = len(await dataset_proposals(s))
+            out.append({"title": f"{n} proposed dataset{'s' if n != 1 else ''} to create",
+                        "url": "/reports/datasets#proposals", "count": n})  # fmt: skip
+            n = len(await proposals(s))
+            out.append({"title": f"{n} set{'s' if n != 1 else ''} of proposed rows to add",
+                        "url": "/reports/", "count": n})  # fmt: skip
+    return out

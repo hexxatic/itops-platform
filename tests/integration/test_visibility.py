@@ -91,7 +91,7 @@ async def test_a_restricted_collection_is_invisible_outside_its_groups(
                     attachments=[{"id": stored.id, "filename": "playbook.pdf",
                                   "size": stored.size_bytes, "mime": stored.mime_type}],
                 )  # fmt: skip
-                await docs.publish(s, ADMIN, doc)
+                await docs.publish(s, ADMIN, doc, version=1)
                 await s.commit()
                 slug, doc_id = doc.slug, doc.id
             async with itops_assets.module.session() as s:
@@ -155,7 +155,7 @@ async def test_an_area_kept_out_of_ai_is_hidden_from_every_ai_connection(
                     s, ADMIN, collection_id=col.id, title=f"Post-mortem {tag}",
                     content=Content(blocks=[TextBlock(html="<p>What happened.</p>")]),
                 )  # fmt: skip
-                await docs.publish(s, ADMIN, doc)
+                await docs.publish(s, ADMIN, doc, version=1)
                 await s.commit()
                 col_id, col_slug, slug = col.id, col.slug, doc.slug
         await wait_for_search(itops_docs.module)
@@ -250,12 +250,17 @@ async def test_admins_change_access_in_the_browser_and_it_is_audited(
             assert (await c.get("/access/docs/nonsense/1")).status_code == 404
         with acting_as(replace(ADMIN, via_ai=True)):
             assert (await c.get(url)).status_code == 403  # never through an AI connection
+        # Collection ids restart when a test recreates the schema; the audit trail keeps
+        # earlier runs' entries, so this run's are found by the collection's name too.
         async with app.state.runtime.sessionmaker() as s:
             actions = [
                 r[0]
                 for r in await s.execute(
-                    text("SELECT action FROM itops.audit_log WHERE entity_id = :e ORDER BY id"),
-                    {"e": f"docs:collection:{col_id}"},
+                    text(
+                        "SELECT action FROM itops.audit_log WHERE entity_id = :e"
+                        " AND entity_title = :t ORDER BY id"
+                    ),
+                    {"e": f"docs:collection:{col_id}", "t": f"Vendors {tag}"},
                 )
             ]
         assert actions == ["area.restricted", "area.opened"]
@@ -285,3 +290,28 @@ async def test_editing_keeps_links_the_editor_cannot_see(database_url: str, tmp_
             # The current value stays selected (labelled Restricted), so saving keeps it.
             assert f'value="assets:ssl_certificate:{hidden.id}" selected' in form
             assert f"secret-{tag}" not in form
+
+
+async def test_admin_pages_keep_ai_out_of_areas_kept_out_of_ai(
+    database_url: str, tmp_path: Path
+) -> None:
+    """The type pages and /audit are web twins of the MCP type tools: an AI connection (an
+    admin's token) mustn't reach an AI-excluded type, or its audit entries, through them."""
+    async with running(database_url, tmp_path) as (c, app):
+        await _restrict(app, "assets", "type", "ssl_certificate", groups=[], no_ai=True)
+        with acting_as(replace(ADMIN, via_ai=True)):
+            page = (await c.get("/assets/types")).text
+            assert "/assets/types/device" in page and "/assets/types/ssl_certificate" not in page
+            assert (await c.get("/assets/types/ssl_certificate")).status_code == 404
+            assert (await c.get("/assets/types/ssl_certificate/edit")).status_code == 404
+            drafted = await c.post(
+                "/api/assets/types/ssl_certificate/draft",
+                data={"name": "Certificate", "fields": "[]"},
+            )
+            assert drafted.status_code == 404
+            assert (await c.post("/api/assets/types/ssl_certificate/discard")).status_code == 404
+            assert (await c.get("/audit")).status_code == 403  # admins, in a browser
+        with acting_as(ADMIN):  # unchanged in the browser
+            assert "/assets/types/ssl_certificate" in (await c.get("/assets/types")).text
+            assert (await c.get("/assets/types/ssl_certificate")).status_code == 200
+            assert (await c.get("/audit")).status_code == 200

@@ -11,7 +11,7 @@
   {% if types %}
   {{ ui.select("type_key", "Columns (a column type)", types, selected=type_key, required=True) }}
   {% else %}
-  {{ ui.alert("No column types are published yet.", "warning") }}
+  {% call ui.alert("", "warning") %}No column types are published yet, so a dataset can't be made. An admin publishes one on <a href="/reports/types">Reports, Types</a> (AI can draft it).{% endcall %}
   {% endif %}
   {{ ui.select("mode", "Where rows come from", modes, selected=mode) }}
   {{ ui.select("time_field", "Time column (for trends and retention)", time_fields, selected=time_field) }}

@@ -52,6 +52,18 @@ async def test_pages_render_in_shell(database_url: str, path: str) -> None:
         assert "http://localhost/static" not in r.text
 
 
+async def test_dev_mode_refuses_changes_from_another_site(database_url: str) -> None:
+    """In dev mode every request is signed in, cookie or not (core/sameorigin.py)."""
+    async with running(database_url) as client:
+        form = {"appearance": "auto"}
+        forged = await client.post("/account/appearance", data=form,
+                                   headers={"Sec-Fetch-Site": "cross-site"})  # fmt: skip
+        assert forged.status_code == 403 and "another site" in forged.text
+        own = {"Sec-Fetch-Site": "same-origin", "Origin": "http://localhost"}
+        assert (await client.post("/account/appearance", data=form, headers=own)).status_code == 303
+        assert (await client.post("/account/appearance", data=form)).status_code == 303  # a script
+
+
 async def test_mcp_endpoint_is_mounted(database_url: str) -> None:
     async with running(database_url) as client:
         r = await client.post(

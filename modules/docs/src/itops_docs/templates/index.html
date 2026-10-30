@@ -3,16 +3,28 @@
 {% block content %}
 {% call ui.page_header("Docs", "IT documentation. Drafts stay private until someone publishes them.") %}
   {% if can_manage_collections %}{{ ui.button("Manage collections", href="/docs/collections", variant="ghost") }}{% endif %}
-  {% if can_manage_types %}{{ ui.button("Document types", href="/docs/types", variant="ghost") }}{% endif %}
+  {% if can_manage_types %}{{ ui.button("Manage types", href="/docs/types", variant="ghost") }}{% endif %}
   {% if can_write %}{{ ui.button("New document", href="/docs/new", variant="primary") }}{% endif %}
 {% endcall %}
 {% if error %}{{ ui.alert(error, "danger") }}{% endif %}
 {{ ui.search_box("/docs/search", "", "Search docs", archived=False) }}
 
-{% if drafts %}
-{% call ui.card("Drafts waiting to be published") %}
-  {{ ui.table([("title", "Title"), ("type", "Type"), ("collection", "Collection"), ("updated", "Last saved")], drafts) }}
+{% if waiting %}
+<div id="waiting">
+{% call ui.card(("Waiting for you: to publish" if can_publish else "Waiting to be published") ~ " (" ~ waiting_count ~ ")") %}
+  <p class="muted">New documents and edits to published ones. Readers keep seeing the published version until someone publishes the change.{% if waiting_count > waiting|length %} Showing the newest {{ waiting|length }}.{% endif %}</p>
+  {{ ui.table([("title", "Title"), ("change", "Change"), ("collection", "Collection"), ("note", "Note"), ("by", "By"),
+               ("updated", "Saved")], waiting) }}
 {% endcall %}
+</div>
+{% endif %}
+{% if due %}
+<div id="reviews">
+{% call ui.card("Waiting for you: due for review (" ~ due_count ~ ")") %}
+  <p class="muted">Published documents past their Review by date. Open one and check it: if it's still right, choose <strong>Still right</strong> on it; if not, edit it and publish the change.{% if due_count > due|length %} Showing the most overdue {{ due|length }}.{% endif %}</p>
+  {{ ui.table([("title", "Document"), ("due", "Review was due")], due) }}
+{% endcall %}
+</div>
 {% endif %}
 
 {% call ui.card("Collections") %}

@@ -1,0 +1,25 @@
+{#- The replacement list (context from views.forecast_context, plus `download` and, on today's
+    list, the skip actions and `skip_form`). -#}
+<div class="stack" id="replacements">
+<div class="row">
+  <p class="muted">The computers this budget replaces, by name: {{ replacing_must }} that must go (too old, or on an operating system that's out of support){% if replacing_total > replacing_must %} and {{ replacing_total - replacing_must }} the plan replaces early, the oldest first{% endif %}.{% if fails %} About {{ fails }} more will be replaced as they fail; which ones can't be known in advance.{% endif %}{% if replacing_more %} The first {{ replacing|length }} are shown; the download has all of them.{% endif %}</p>
+  {% if download %}{{ ui.export_links(download) }}{% endif %}
+</div>
+{{ ui.table(replacing_columns, replacing, empty="Nothing has to be replaced.") }}
+{% if skipped %}
+<h3>Skipped to {{ year + 1 if year else "next year" }}</h3>
+<p class="muted">Kept this year with why; the budget doesn't pay for them. Next year they're back on the list, marked as skipped.</p>
+{{ ui.table(skipped_columns, skipped) }}
+{% endif %}
+{% if skip_form is defined and replacing %}
+<form method="post" action="/api/budget/skips" class="stack" id="skip">
+  <h3>Skip one to {{ skip_form.next }}</h3>
+  <p class="muted">A computer that can wait a year comes off this year's list and the budget. If the plan replaces computers early, the next oldest takes its place.</p>
+  <div class="grid">
+    {{ ui.select("asset_id", "Computer", skip_form.options, selected=skip_form.selected, required=True) }}
+    {{ ui.field("reason", "Why it can wait", skip_form.reason, required=True, help="e.g. Light use; replaced with the line in " ~ skip_form.next ~ ".") }}
+  </div>
+  <div class="actions">{{ ui.button("Skip to " ~ skip_form.next, type="submit") }}</div>
+</form>
+{% endif %}
+</div>

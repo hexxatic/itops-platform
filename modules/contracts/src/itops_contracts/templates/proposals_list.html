@@ -1,0 +1,15 @@
+{#- Proposed costs and rates waiting for someone who can see costs (context: proposals, back:
+    "list" on the proposals page, "" on a contract's page). -#}
+{% for p in proposals %}
+{% call ui.card(p.title) %}
+<div class="stack">
+  <p class="muted">For the term {{ p.term }} · proposed by {{ p.by }} · {{ p.when }}</p>
+  {% if p.note %}<p>{{ p.note }}</p>{% endif %}
+  {{ ui.table([("field", "What"), ("before", "Now"), ("after", "Proposed")], p.rows) }}
+  <div class="actions">
+    {{ ui.action_button("Apply", "/api/contracts/proposals/" ~ p.id ~ "/apply?back=" ~ back, variant="primary") }}
+    {{ ui.action_button("Reject", "/api/contracts/proposals/" ~ p.id ~ "/reject?back=" ~ back, variant="danger") }}
+  </div>
+</div>
+{% endcall %}
+{% endfor %}

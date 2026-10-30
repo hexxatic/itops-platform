@@ -3,15 +3,16 @@
 {% block content %}
 {{ ui.breadcrumb([("Docs", "/docs/"), (collection.name, "/docs/c/" ~ collection.slug), (doc.title, None)]) }}
 {% call ui.page_header(doc.title) %}
-  {% set publishing = can_publish and doc.status != "archived" and (showing_draft or pending_draft) %}
+  {#- Publish and discard only where the draft they act on is the one on screen. -#}
+  {% set publishing = can_publish and doc.status != "archived" and showing_draft %}
   {% if can_write %}{{ ui.button("Edit", href="/docs/d/" ~ doc.slug ~ "/edit", variant="secondary" if publishing else "primary") }}{% endif %}
   {% if can_publish %}
     {% if doc.status == "archived" %}
       {{ ui.action_button("Restore", "/api/docs/documents/" ~ doc.slug ~ "/restore") }}
     {% else %}
-      {% if showing_draft or pending_draft %}
-        {{ ui.action_button("Publish", "/api/docs/documents/" ~ doc.slug ~ "/publish", variant="primary") }}
-        {{ ui.action_button("Discard draft", "/api/docs/documents/" ~ doc.slug ~ "/discard", variant="danger",
+      {% if publishing %}
+        {{ ui.action_button("Publish v" ~ shown_version, "/api/docs/documents/" ~ doc.slug ~ "/publish?version=" ~ shown_version, variant="primary") }}
+        {{ ui.action_button("Discard draft", "/api/docs/documents/" ~ doc.slug ~ "/discard?version=" ~ shown_version, variant="danger",
                             confirm="Throw away the unpublished changes?" if pending_draft else "Delete this never-published document?") }}
       {% endif %}
       {% if doc.current_version_id %}
@@ -25,7 +26,7 @@
 {% for src in sources %}
   {% if src.missing_since %}
     {{ ui.alert("No longer in " ~ src.system ~ " since " ~ src.missing_since ~ "."
-                ~ (" Check whether it's gone and archive it here if so." if doc.status != "archived" else ""), "warning") }}
+                ~ (" If it's really gone, archive it (Archive, above). If it's still there, " ~ src.system ~ " has moved or hidden it: the next import clears this once it's back." if doc.status != "archived" else ""), "warning") }}
   {% endif %}
 {% endfor %}
 
@@ -33,15 +34,22 @@
   {{ ui.badge(doc.status.capitalize(), status_tone) }}
   {% if type_name %}{{ ui.badge(type_name, "neutral") }}{% endif %}
   {% for t in tags %}{{ ui.badge(t, "info") }}{% endfor %}
+  {% if help_site %}{{ ui.badge("On the help site: " ~ (audience or "everyone"), "success") }}{% endif %}
   {% if next_review %}<span class="muted">Review by {{ next_review }}</span>{% endif %}
   {% for src in sources %}{{ ui.badge("Synced from " ~ src.system, "info") }}<span class="muted">last seen {{ src.last_seen }}</span>{% endfor %}
 </div>
 
+{% if review_due and can_write %}
+{% call ui.alert("", "warning") %}This document was due for review on {{ next_review }}. Check it: if it's still right, mark it so; if not, edit it and publish the change.{% endcall %}
+<div class="actions">{{ ui.action_button("Still right", "/api/docs/documents/" ~ doc.slug ~ "/reviewed", variant="primary") }}</div>
+{% endif %}
+
 {% if showing_draft %}
-  {{ ui.alert("You're looking at the draft. Readers don't see it until it's published.", "warning") }}
+  {{ ui.alert("You're looking at the draft. Readers don't see it until it's published."
+              ~ (" " ~ pending_summary if pending_summary else ""), "warning") }}
 {% elif pending_draft %}
-  {{ ui.alert("This document has unpublished changes.", "info") }}
-  <p>{{ ui.button("Preview the draft", href="/docs/d/" ~ doc.slug ~ "?draft=1", variant="ghost") }}</p>
+  {{ ui.alert(pending_summary, "info") }}
+  <p>{{ ui.button("Review the draft" ~ (" to publish it" if can_publish and doc.status != "archived" else ""), href="/docs/d/" ~ doc.slug ~ "?draft=1", variant="ghost") }}</p>
 {% endif %}
 {% if doc.status == "archived" %}{{ ui.alert("Archived: hidden from browsing and search.", "neutral") }}{% endif %}
 
@@ -49,6 +57,15 @@
   {% if part == "top" and definition %}
     {% call ui.card("Details") %}{{ ui.field_values(definition, values, links) }}{% endcall %}
   {% elif part == "side" %}
+    {% if can_share %}
+      <div id="help-site">{% call ui.card("Help site") %}
+        <form method="post" action="/api/docs/documents/{{ doc.slug }}/help-site" class="stack">
+          {{ ui.checkbox("shown", "Show on the help site", checked=help_site, help="Staff read it there, read-only, once it's published. Write it for people outside IT.") }}
+          {{ ui.select("audience_id", "For", audience_choices, selected=doc.audience_id or "") }}
+          <div class="row">{{ ui.button("Save", type="submit") }}</div>
+        </form>
+      {% endcall %}</div>
+    {% endif %}
     {% if logins %}
       <div id="logins">{% call ui.card("Logins (" ~ logins|length ~ ")") %}{{ ui.login_list(logins) }}{% endcall %}</div>
     {% endif %}

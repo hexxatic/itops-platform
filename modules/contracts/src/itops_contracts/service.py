@@ -13,8 +13,10 @@ Pages, AI tools and the daily renewals job all call these functions, so the rule
 * **People edit directly**; every change is audited. **AI drafts**: an AI connection may
   create a draft contract and change drafts; a person accepts it. Services refuse AI on
   everything else (tokens reach the REST API too).
-* **Costs** are shown and changed only with ``contracts.costs``, and never given to an AI
-  connection.
+* **Costs** (a term's cost and its usage **rates**: what each page or GB used costs, and how
+  many a month are included) are shown and changed only with ``contracts.costs``, and never
+  given to an AI connection. AI, or someone without ``contracts.costs``, may **propose** them
+  (ADR 0014, amended 2026-10-28): write-only, a person who can see costs applies or rejects.
 
 Callers pass a session and commit.
 """
@@ -28,14 +30,14 @@ from dataclasses import dataclass
 from decimal import Decimal, InvalidOperation
 from typing import Any
 
-from sqlalchemy import or_, select
+from sqlalchemy import delete, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from itops.sdk import Principal, SuggestField
 from itops.sdk.content import Passage
 from itops.sdk.types import FieldDef, TypeDef, TypeProblem, validate_values
 from itops_contracts.app import module
-from itops_contracts.models import Contract, Term, utcnow
+from itops_contracts.models import Contract, Proposal, Rate, Term, utcnow
 
 CATEGORIES = {
     "software": "Software and licenses",
@@ -172,6 +174,59 @@ def _parse_cost(value: str | Decimal | float | None) -> Decimal | None:
     return cost
 
 
+RATE_PLACES = Decimal("0.00001")  # per-page prices run to four or five decimal places
+MAX_RATES = 50
+
+
+def _parse_rate_price(value: str | Decimal | float | None, item: str) -> Decimal:
+    try:
+        price = Decimal(str(value).replace(",", "").replace("$", "").strip())
+    except InvalidOperation as exc:
+        raise ContractsError(f"{item}: the price is a number, like 0.0099.") from exc
+    if not price.is_finite() or price < 0 or price >= Decimal("1000000000"):
+        raise ContractsError(f"{item}: the price is between 0 and 999,999,999.")
+    if price != price.quantize(RATE_PLACES):
+        raise ContractsError(f"{item}: at most five decimal places, like 0.00995.")
+    return price.quantize(RATE_PLACES)
+
+
+@dataclass
+class RateInput:
+    """One usage rate as given: what's charged for, the price of one, and how many a month
+    the term includes (if any)."""
+
+    item: str
+    price: str | Decimal | float | None
+    included: int | str | None = None
+
+
+@dataclass(frozen=True)
+class ParsedRate:
+    item: str
+    price: Decimal
+    included: int | None
+
+
+def parse_rates(rates: list[RateInput]) -> list[ParsedRate]:
+    """Checked rates, in order; rows left empty (a form's spare rows) are skipped."""
+    out: list[ParsedRate] = []
+    for n, r in enumerate(rates, 1):
+        item = _clean_text(r.item, 200)
+        no_price = r.price is None or str(r.price).strip() == ""
+        no_included = r.included is None or str(r.included).strip() == ""
+        if not item and no_price and no_included:
+            continue
+        if not item:
+            raise ContractsError(f'Rate {n}: say what it charges for, like "B&W page".')
+        if no_price:
+            raise ContractsError(f"{item}: give the price of one, like 0.0099.")
+        included = _parse_int(r.included, f"{item}: included a month", high=100_000_000)
+        out.append(ParsedRate(item, _parse_rate_price(r.price, item), included))
+    if len(out) > MAX_RATES:
+        raise ContractsError(f"A term takes at most {MAX_RATES} rates.")
+    return out
+
+
 @dataclass
 class ContractInput:
     """What a person (or an AI, for a draft) gives for a contract."""
@@ -290,6 +345,12 @@ async def terms(s: AsyncSession, contract_id: uuid.UUID) -> list[Term]:
 async def current_term(s: AsyncSession, contract_id: uuid.UUID) -> Term | None:
     found = await terms(s, contract_id)
     return found[0] if found else None
+
+
+async def rates(s: AsyncSession, term_id: uuid.UUID) -> list[Rate]:
+    """A term's usage rates, in order. Money: only for people who may see costs."""
+    rows = await s.execute(select(Rate).where(Rate.term_id == term_id).order_by(Rate.position))
+    return list(rows.scalars())
 
 
 async def contracts(
@@ -444,23 +505,48 @@ async def update_term(
     await _audit(s, c, "term_changed", f"Changed the term {t.starts_on} to {t.ends_on}")
 
 
-async def accept(s: AsyncSession, who: Principal, c: Contract) -> None:
-    """A person accepts an AI-drafted contract: it becomes active."""
+def stamp(c: Contract) -> str:
+    """When the contract last changed. The page sends it back with Accept or Discard, so a
+    draft changed after the page loaded (an AI connection may) isn't acted on unread."""
+    return c.updated_at.isoformat()
+
+
+def _check_reviewed(c: Contract, reviewed: str | None, done: str, verb: str) -> None:
+    """``reviewed`` is the stamp the person's page showed; ``None`` only for callers
+    without a page (tests)."""
+    if reviewed is not None and reviewed != stamp(c):
+        raise ContractsError(
+            f"Not {done}: {c.updated_by} changed this draft at "
+            f"{c.updated_at:%Y-%m-%d %H:%M} UTC, after you opened it. It's shown below: "
+            f"check it, then {verb} again."
+        )
+
+
+async def accept(s: AsyncSession, who: Principal, c: Contract, *, reviewed: str | None) -> None:
+    """A person accepts an AI-drafted contract: it becomes active. ``reviewed`` is
+    :func:`stamp` as the person's page showed it."""
     _no_ai(who, "accept a drafted contract")
     if c.status != "draft":
         raise ContractsError("Only a draft can be accepted.")
+    _check_reviewed(c, reviewed, "accepted", "accept it")
     c.status, c.updated_by, c.updated_at = "active", who.user, utcnow()
     await _audit(s, c, "accepted", "Accepted the AI-drafted contract")
     await _index(s, c)
 
 
-async def discard_draft(s: AsyncSession, who: Principal, c: Contract) -> None:
+async def discard_draft(
+    s: AsyncSession, who: Principal, c: Contract, *, reviewed: str | None
+) -> None:
     _no_ai(who, "discard a drafted contract")
     if c.status != "draft":
         raise ContractsError("Only a draft can be discarded; archive an accepted contract.")
+    _check_reviewed(c, reviewed, "discarded", "discard it")
     await _audit(s, c, "discarded", "Discarded the AI-drafted contract")
     for t in await terms(s, c.id):
+        await s.execute(delete(Rate).where(Rate.term_id == t.id))
+        await s.execute(delete(Proposal).where(Proposal.term_id == t.id))
         await s.delete(t)
+    await s.flush()  # the terms go before their contract
     await s.delete(c)
 
 
@@ -494,6 +580,9 @@ async def renew(
     s.add(nxt)
     c.updated_by, c.updated_at = who.user, utcnow()
     await s.flush()
+    # The rates carry over (a renewal usually keeps them); people change them on the new term.
+    kept = [ParsedRate(r.item, r.price, r.included_per_month) for r in await rates(s, current.id)]
+    await _replace_rates(s, nxt, kept)
     await _audit(
         s,
         c,
@@ -540,6 +629,150 @@ async def restore(s: AsyncSession, who: Principal, c: Contract) -> None:
     c.status, c.updated_by, c.updated_at = "active", who.user, utcnow()
     await _audit(s, c, "restored", "Restored")
     await _index(s, c)
+
+
+# ---- rates, and costs proposed by AI (ADR 0014, amended 2026-10-28) ------------------------
+
+PROPOSAL_STATES = {"pending": "Waiting", "applied": "Applied", "rejected": "Rejected"}
+
+
+def _need_costs(who: Principal, what: str) -> None:
+    _no_ai(who, what)
+    if not can_see_costs(who):
+        raise ContractsError(f"Only someone who can see contract costs can {what}.")
+
+
+async def _replace_rates(s: AsyncSession, t: Term, parsed: list[ParsedRate]) -> None:
+    await s.execute(delete(Rate).where(Rate.term_id == t.id))
+    for n, r in enumerate(parsed):
+        s.add(Rate(term_id=t.id, position=n, item=r.item, price=r.price,
+                   included_per_month=r.included))  # fmt: skip
+
+
+async def set_rates(
+    s: AsyncSession, who: Principal, c: Contract, t: Term, given: list[RateInput]
+) -> bool:
+    """Replace a term's rates (a person who can see costs). Returns whether they changed."""
+    _need_costs(who, "change rates")
+    if c.status == "archived":
+        raise ContractsError("This contract is archived. Restore it before changing it.")
+    parsed = parse_rates(given)
+    before = [ParsedRate(r.item, r.price, r.included_per_month) for r in await rates(s, t.id)]
+    if parsed == before:
+        return False
+    await _replace_rates(s, t, parsed)
+    c.updated_by, c.updated_at = who.user, utcnow()
+    await _audit(s, c, "rates_changed",
+                 f"Changed the rates on the term {t.starts_on} to {t.ends_on} "
+                 f"(now {len(parsed)})")  # fmt: skip
+    return True
+
+
+def proposal_data(p: Proposal) -> dict[str, Any]:
+    data: dict[str, Any] = json.loads(p.data)
+    return data
+
+
+def proposal_rates(p: Proposal) -> list[ParsedRate] | None:
+    """The rates a proposal gives, or ``None`` when it leaves them as they are."""
+    data = proposal_data(p)
+    if "rates" not in data:
+        return None
+    return [ParsedRate(r["item"], Decimal(r["price"]), r.get("included")) for r in data["rates"]]
+
+
+def proposal_what(p: Proposal) -> str:
+    """What a proposal changes, without amounts ("a cost and 4 rates")."""
+    data = proposal_data(p)
+    parts = ["a cost"] if "cost" in data else []
+    if "rates" in data:
+        n = len(data["rates"])
+        parts.append(f"{n} rate{'s' if n != 1 else ''}" if n else "no rates (removing them)")
+    return " and ".join(parts)
+
+
+async def propose_costs(
+    s: AsyncSession,
+    who: Principal,
+    c: Contract,
+    t: Term,
+    *,
+    cost: str | Decimal | float | None = None,
+    cost_period: str | None = None,
+    rates_given: list[RateInput] | None = None,
+    note: str = "",
+) -> Proposal:
+    """Propose a term's cost and/or its rates (``rates_given`` replaces the whole list), checked
+    like a real save. For AI connections and anyone without ``contracts.costs``; nothing
+    changes until a person who can see costs applies it. The proposer never sees the term's
+    current costs: this only writes."""
+    if c.status == "archived":
+        raise ContractsError("This contract is archived: nothing to propose.")
+    data: dict[str, Any] = {}
+    if cost is not None and str(cost).strip() != "":
+        if cost_period not in COST_PERIODS:
+            raise ContractsError("cost_period: 'month', 'year' or 'once'.")
+        data["cost"], data["cost_period"] = str(_parse_cost(cost)), cost_period
+    if rates_given is not None:
+        data["rates"] = [{"item": r.item, "price": str(r.price), "included": r.included}
+                         for r in parse_rates(rates_given)]  # fmt: skip
+    if not data:
+        raise ContractsError("Propose a cost (with its cost_period), rates, or both.")
+    p = Proposal(term_id=t.id, data=json.dumps(data), note=_clean_text(note, 1000),
+                 proposed_by=who.user, proposed_via_ai=who.via_ai)  # fmt: skip
+    s.add(p)
+    await s.flush()
+    await _audit(s, c, "costs_proposed",
+                 f"Proposed {proposal_what(p)} for the term {t.starts_on} to {t.ends_on}, "
+                 "for someone who can see costs to apply", proposal=p.id)  # fmt: skip
+    return p
+
+
+async def proposals(
+    s: AsyncSession, *, status: str | None = "pending", contract_id: uuid.UUID | None = None,
+    limit: int = 200,
+) -> list[tuple[Proposal, Term, Contract]]:  # fmt: skip
+    """Proposals with their term and contract, newest first (only pending by default)."""
+    q = (select(Proposal, Term, Contract).join(Term, Term.id == Proposal.term_id)
+         .join(Contract, Contract.id == Term.contract_id)
+         .order_by(Proposal.proposed_at.desc(), Proposal.id.desc()).limit(limit))  # fmt: skip
+    if status:
+        q = q.where(Proposal.status == status)
+    if contract_id:
+        q = q.where(Contract.id == contract_id)
+    return [(p, t, c) for p, t, c in (await s.execute(q)).tuples()]
+
+
+async def get_proposal(s: AsyncSession, proposal_id: int) -> Proposal | None:
+    return await s.get(Proposal, proposal_id)
+
+
+async def decide_proposal(s: AsyncSession, who: Principal, p: Proposal, *, apply: bool) -> Contract:
+    """A person who can see costs applies a proposal (the term takes its cost and rates) or
+    rejects it. Returns the contract."""
+    _need_costs(who, "apply or reject proposed costs")
+    if p.status != "pending":
+        raise ContractsError(f"Already {PROPOSAL_STATES[p.status].lower()} by {p.decided_by}.")
+    t = await get_term(s, p.term_id)
+    c = await get(s, t.contract_id) if t else None
+    if t is None or c is None:
+        raise ContractsError("The term it was for is gone.")
+    what = proposal_what(p)
+    if apply:
+        if c.status == "archived":
+            raise ContractsError("This contract is archived. Restore it before changing it.")
+        data = proposal_data(p)
+        if "cost" in data:
+            t.cost, t.cost_period = Decimal(data["cost"]), data["cost_period"]
+        if (given := proposal_rates(p)) is not None:
+            await _replace_rates(s, t, given)
+        c.updated_by, c.updated_at = who.user, utcnow()
+    p.status = "applied" if apply else "rejected"
+    p.decided_by, p.decided_at = who.user, utcnow()
+    await _audit(s, c, "costs_applied" if apply else "costs_rejected",
+                 f"{'Applied' if apply else 'Rejected'} {what} proposed by {p.proposed_by} "
+                 f"for the term {t.starts_on} to {t.ends_on}", proposal=p.id)  # fmt: skip
+    return c
 
 
 # ---- AI suggestions from a term's files (ADR 0015) ---------------------------------------
@@ -924,3 +1157,37 @@ async def upsert(
 @module.service("link_targets")
 async def link_targets() -> list[dict[str, str]]:
     return [{"target": "contracts", "label": "Contracts: a contract"}]
+
+
+DECIDE_DAYS = 30  # a renewal is on *Waiting for you* this close to its cancel-by date
+
+
+@module.service("waiting")
+async def waiting() -> list[dict[str, Any]]:
+    """What's waiting for the person looking (core's *Waiting for you*): AI drafts to accept,
+    renewals to decide, proposed costs to apply, and suggestions from a file they started and
+    haven't reviewed."""
+    who = module.current_principal()
+    out: list[dict[str, Any]] = []
+    if who is None:
+        return out
+    async with module.session() as s:
+        if who.has("contracts.approve"):
+            n = len(await contracts(s, status="draft"))
+            out.append({"title": f"{n} AI-drafted contract{'s' if n != 1 else ''} to accept",
+                        "url": "/contracts/", "count": n})  # fmt: skip
+            n = sum(1 for u in await upcoming(s) if u.days_left <= DECIDE_DAYS)
+            title = (f"{n} renewal{'s' if n != 1 else ''} to decide (cancel-by within "
+                     f"{DECIDE_DAYS} days or past)")  # fmt: skip
+            out.append({"title": title, "url": "/contracts/", "count": n})
+        if can_see_costs(who):
+            n = len(await proposals(s))
+            out.append({"title": f"{n} proposed contract cost{'s' if n != 1 else ''} to review",
+                        "url": "/contracts/proposals", "count": n})  # fmt: skip
+    if who.has("contracts.write"):
+        for run in await module.ai.my_runs_to_review():
+            url = (f"/contracts/from-file/{run.id}" if run.entity_type == "new_contract"
+                   else f"/contracts/t/{run.entity_id}/suggestions/{run.id}")  # fmt: skip
+            out.append({"title": f"Suggestions from {run.filename} to review", "url": url,
+                        "count": 1})  # fmt: skip
+    return out

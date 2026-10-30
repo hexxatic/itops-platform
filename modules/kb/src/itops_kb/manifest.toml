@@ -1,0 +1,27 @@
+name = "kb"
+version = "0.3.0"
+title = "How-tos"
+nav_order = 10
+description = "How-tos for staff on the help site: Docs documents shown there, each for everyone or an audience, to read and search, and whether each one helped."
+# The help site (ADR 0027): served on its own host, with its own menu.
+site = "help"
+requires = ["core>=0.1"]
+optional = ["docs"]
+provides = []
+
+[permissions]
+# Everyone who can sign in, staff included (ADR 0027).
+"kb.read" = { description = "Read how-tos and say whether they helped", grant = "everyone" }
+# IT staff who look after the how-tos: mapped to an AD group in ITOPS_PERMISSION_GROUPS.
+"kb.feedback.manage" = { description = "See what people said about the how-tos", grant = "group" }
+
+[events]
+feedback_left = "Someone said whether a how-to helped (payload: slug, helpful)"
+
+# Keeps search matching Docs (each publish, archive, help-site and collection change also
+# runs it at once): what a collection's restriction changes is picked up here.
+[jobs.index]
+title = "How-tos search"
+description = "Indexes new and changed how-tos from Docs for the help site's search, and removes the ones no longer on the help site."
+schedule = "every 15m"
+permissions = ["kb.read"]

@@ -19,6 +19,27 @@
 </p>
 {% if hidden_money %}<p class="muted">Money columns are left out: they need permission to see costs.</p>{% endif %}
 
+{% for p in proposals %}
+{% call ui.card(p.count ~ " row" ~ ("" if p.count == 1 else "s") ~ " proposed by AI") %}
+<div class="stack"{% if loop.first %} id="proposals"{% endif %}>
+  <p class="muted">Proposed by {{ p.by }} · {{ p.when }}. Nothing is added until someone approves them.</p>
+  <p>{{ p.note }}</p>
+  {% if p.duplicates %}{{ ui.alert(p.duplicates ~ " of these rows are already in the dataset: approving adds them again.", "warning") }}{% endif %}
+  {% if p.money_hidden %}<p class="muted">They include money you can't see; someone who can see costs approves them.</p>{% endif %}
+  {% if p.count > 50 %}<p class="muted">The first 50 are shown.</p>{% endif %}
+  {{ ui.table(p.columns, p.rows) }}
+  {% if can_review and not p.money_hidden %}
+  <div class="actions">
+    {{ ui.action_button("Add " ~ p.count ~ " rows", "/api/reports/d/" ~ ds.key ~ "/proposals/" ~ p.id ~ "/approve", variant="primary") }}
+    {{ ui.action_button("Reject", "/api/reports/d/" ~ ds.key ~ "/proposals/" ~ p.id ~ "/reject", variant="danger") }}
+  </div>
+  {% elif not can_review %}
+  <p class="muted">Someone who can publish reports approves or rejects them.</p>
+  {% endif %}
+</div>
+{% endcall %}
+{% endfor %}
+
 {% call ui.card("Rows") %}
 <div class="row">
   <p class="muted">{{ total }} row{{ "" if total == 1 else "s" }}{% if total > rows|length %}; the newest {{ rows|length }} are shown, downloads have all of them{% endif %}.</p>

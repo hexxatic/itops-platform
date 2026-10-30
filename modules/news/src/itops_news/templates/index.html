@@ -12,7 +12,7 @@
 </div>
 
 {% if drafts %}
-{% call ui.card("Drafts") %}
+{% call ui.card(("Waiting for you: drafts" if can_publish else "Drafts") ~ " (" ~ drafts|length ~ ")") %}
 <p class="muted">Only people who can write news see these.{% if can_publish %} Oldest first: publish them in this order and the newest ends up on top.{% endif %}</p>
 {{ ui.table([("title", "Title"), ("category", "Kind"), ("by", "By"), ("updated", "Updated")], drafts) }}
 {% endcall %}

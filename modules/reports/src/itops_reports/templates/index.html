@@ -3,14 +3,29 @@
 {% block content %}
 {% call ui.page_header("Reports", "Dashboards built on data from connectors or typed in.") %}
   {{ ui.button("Datasets", href="/reports/datasets") }}
+  {% if can_manage_types %}{{ ui.button("Manage types", href="/reports/types", variant="ghost") }}{% endif %}
   {% if can_publish %}{{ ui.button("New report", href="/reports/new", variant="primary") }}{% endif %}
 {% endcall %}
 {% if error %}{{ ui.alert(error, "danger") }}{% endif %}
 
 {% if drafts %}
-{% call ui.card("Drafted by AI, waiting for you") %}
+{% call ui.card("Waiting for you: report drafts (" ~ drafts|length ~ ")") %}
 <p class="muted">An AI connection drafted these. Open one to check it, then publish or discard it.</p>
 {{ ui.table([("report", "Report"), ("state", ""), ("by", "Drafted by")], drafts) }}
+{% endcall %}
+{% endif %}
+
+{% if proposed_datasets %}
+{% call ui.card("Waiting for you: proposed datasets (" ~ proposed_datasets|length ~ ")") %}
+<p class="muted">An AI connection proposed these datasets. Open one to check it, then create or reject it.</p>
+{{ ui.table([("dataset", "Dataset"), ("note", "Note"), ("by", "Proposed by")], proposed_datasets) }}
+{% endcall %}
+{% endif %}
+
+{% if proposed %}
+{% call ui.card("Waiting for you: proposed rows (" ~ proposed|length ~ ")") %}
+<p class="muted">An AI connection proposed rows for these datasets. Open one to check the rows, then add or reject them.</p>
+{{ ui.table([("dataset", "Dataset"), ("rows", "Rows"), ("note", "Note"), ("by", "Proposed by")], proposed) }}
 {% endcall %}
 {% endif %}
 

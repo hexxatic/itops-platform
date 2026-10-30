@@ -392,8 +392,12 @@ title = "Typages"
 
             await c.post("/api/typages/types/vendor/retire")
             page = (await c.get("/typages/types/vendor")).text
-            assert "Retired" in page and "All Typages types" in page  # back to the list
-            assert "Back to Vendor" in (await c.get("/typages/types/vendor/edit")).text
+            assert (
+                "Retired" in page and 'href="/typages/types"' in page
+            )  # the breadcrumb back to the list
+            assert (
+                'href="/typages/types/vendor"' in (await c.get("/typages/types/vendor/edit")).text
+            )
 
             # Retired types stay out of the list unless asked for.
             listing = (await c.get("/typages/types")).text

@@ -1,9 +1,8 @@
 {% extends "core/shell.html" %}
 {% import "core/components.html" as ui %}
 {% block content %}
-{{ ui.breadcrumb([("Tools", "/tools"), (action.module_title, None), (action.decl.title, None)]) }}
+{{ ui.breadcrumb([("Tools", "/tools"), (action.decl.title, None)]) }}
 {% call ui.page_header(action.decl.title, action.decl.description) %}
-  {{ ui.button("All tools", href="/tools") }}
 {% endcall %}
 {% if error %}{{ ui.alert(error, "danger") }}{% endif %}
 

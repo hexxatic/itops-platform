@@ -1,0 +1,28 @@
+{% extends "core/shell.html" %}
+{% import "core/components.html" as ui %}
+{% block content %}
+{{ ui.breadcrumb([("Assets", "/assets/"), ("Computer classes", None)]) }}
+{% call ui.page_header("Computer classes", "Which computers are Engineering and which are Standard. A computer's class is its model's tier and its kind (Laptop or Workstation); a person can set Class on a computer to override it. Budget prices and replaces each computer at its class.") %}{% endcall %}
+{% if error %}{{ ui.alert(error, "danger") }}{% endif %}
+{% if unclassified %}{{ ui.alert(unclassified ~ (" computer in use has" if unclassified == 1 else " computers in use have") ~ " a model on neither list, or no model, so no class. Add their models below.", "warning") }}{% endif %}
+{% call ui.card("Models in use") %}
+  {{ ui.table([("model", "Model"), ("form", "Form"), ("count", "Computers"), ("cls", "Class by model"), ("set", "Set by a person")], rows, empty="No laptops or workstations in Assets yet.") }}
+{% endcall %}
+{% call ui.card("Model lists") %}
+{% if can_edit %}
+<form method="post" action="/api/assets/classes" class="stack">
+  <div class="grid">
+    {{ ui.field("engineering", "Engineering models", v.engineering, type="textarea", help="One pattern per line: a regular expression matched anywhere in the model, ignoring case. # starts a comment. Checked before Standard.") }}
+    {{ ui.field("standard", "Standard models", v.standard, type="textarea", help="The same, for standard-issue computers.") }}
+  </div>
+  <div class="actions">{{ ui.button("Save", type="submit", variant="primary") }}</div>
+</form>
+{% else %}
+  {{ ui.table([("tier", "Tier"), ("pattern", "Model pattern")], patterns, empty="No patterns.") }}
+  <p class="muted">Admins change these.</p>
+{% endif %}
+{% endcall %}
+{% if activity %}
+{% call ui.disclosure("Activity (" ~ activity|length ~ ")") %}{{ ui.activity(activity) }}{% endcall %}
+{% endif %}
+{% endblock %}

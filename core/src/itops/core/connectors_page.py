@@ -14,24 +14,37 @@ from fastapi import FastAPI, Form, HTTPException, Request
 from fastapi.responses import HTMLResponse, RedirectResponse, Response
 from fastapi.templating import Jinja2Templates
 
-from itops.core import auth
+from itops.core import auth, problems
 from itops.core.connectors import (
     CONNECTORS_PERMISSION,
     HUMAN_ONLY,
+    ITEM_DAYS,
+    NOT_LISTED,
     ConnectorError,
     Registered,
     Run,
     next_due,
     utcnow,
 )
+from itops.core.export import Column, export_response
 from itops.core.runtime import Runtime
 
-STATUS_TONE = {"running": "info", "succeeded": "success", "problems": "warning", "failed": "danger"}
+ITEMS_SHOWN = 500  # per outcome on a run's page; the download has every one
+MISSING = "missing from source"
+
+STATUS_TONE = {
+    "running": "info",
+    "succeeded": "success",
+    "problems": "warning",
+    "failed": "danger",
+    "stopped": "warning",
+}
 STATUS_TEXT = {
     "running": "Running",
     "succeeded": "Succeeded",
     "problems": "Finished with problems",
     "failed": "Failed",
+    "stopped": "Stopped",
 }
 
 
@@ -133,7 +146,12 @@ def mount_connectors(app: FastAPI, templates: Jinja2Templates, runtime: Runtime)
         return templates.TemplateResponse(
             request,
             "core/connectors.html",
-            {"page_title": "Connectors", "rows": rows, "job_rows": job_rows},
+            {
+                "page_title": "Connectors",
+                "current_module": "admin",
+                "rows": rows,
+                "job_rows": job_rows,
+            },
         )
 
     @app.get("/connectors/{key}", response_class=HTMLResponse, include_in_schema=False)
@@ -150,6 +168,7 @@ def mount_connectors(app: FastAPI, templates: Jinja2Templates, runtime: Runtime)
             "core/connector.html",
             {
                 "page_title": reg.decl.title,
+                "current_module": "admin",
                 "reg": reg,
                 "enabled": (await runner.enabled()).get(key, False),
                 "running": runner.is_running(key),
@@ -181,18 +200,92 @@ def mount_connectors(app: FastAPI, templates: Jinja2Templates, runtime: Runtime)
         if run is None:
             raise HTTPException(status_code=404, detail="No such run")
         reg = runner.get(run.connector)
+        listed = await runner.item_counts(run.id)
+        missing = [p["url"] for p in run.problems if "/missing/" in (p.get("url") or "")]
+        breakdown: list[dict[str, Any]] = []
+        for outcome, n in run.counts.items():
+            if outcome in NOT_LISTED or (not listed.get(outcome) and outcome != MISSING):
+                continue
+            rows = [
+                {"item": {"text": i["item"], "href": i["url"]} if i["url"] else i["item"],
+                 "detail": i["detail"]}
+                for i in await runner.items(run.id, outcome, limit=ITEMS_SHOWN)
+            ] if listed.get(outcome) else []  # fmt: skip
+            breakdown.append({
+                "outcome": outcome, "count": n, "rows": rows,
+                "more": max(0, listed.get(outcome, 0) - len(rows)),
+                "download": f"/connectors/runs/{run.id}/items.csv?outcome={quote(outcome)}",
+                "missing": missing if outcome == MISSING else [],
+            })  # fmt: skip
         return templates.TemplateResponse(
             request,
             "core/connector_run.html",
             {
+                "breakdown": breakdown,
+                "item_days": ITEM_DAYS,
+                "system": reg.decl.system if reg else run.connector,
                 "page_title": f"Run {run.id}",
+                "current_module": "admin",
                 "run": run,
                 "title": reg.decl.title if reg else run.connector,
                 "status": _status(run),
                 "started": _when(run.started_at),
                 "finished": _when(run.finished_at),
                 "counts": [{"outcome": k, "count": n} for k, n in run.counts.items()],
-                "problems": run.problems,
+                "problems": problems.rows(run.problems),
+                "notes": problems.rows(run.notes),
+            },
+        )
+
+    @app.get("/connectors/runs/{run_id}/items.csv", include_in_schema=False)
+    async def run_items_csv(run_id: int, outcome: str = "") -> Response:  # pyright: ignore[reportUnusedFunction]
+        """Every item of a run (or of one outcome), as CSV."""
+        require()
+        run = await runner.run(run_id)
+        if run is None:
+            raise HTTPException(status_code=404, detail="No such run")
+        rows = await runner.items(run_id, outcome or None)
+        columns = [Column("outcome", "Outcome"), Column("item", "Item"),
+                   Column("detail", "What changed"), Column("url", "Link")]  # fmt: skip
+        name = f"{run.connector}-run-{run_id}" + (f"-{outcome}" if outcome else "")
+        return export_response(rows, columns, filename=name.replace(" ", "-"), format="csv")
+
+    @app.get("/connectors/{key}/missing/{source_type}", response_class=HTMLResponse,
+             include_in_schema=False)  # fmt: skip
+    async def missing_page(request: Request, key: str, source_type: str) -> Response:  # pyright: ignore[reportUnusedFunction]
+        """The records a connector's source no longer lists (flagged by a complete read),
+        linked to where people check and delete them."""
+        require()
+        reg = connector_or_404(key)
+        refs = await runner.missing(key, source_type)
+        names: dict[tuple[str, str], dict[str, str]] = {}
+        by_module: dict[str, list[str]] = {}
+        for r in refs:
+            by_module.setdefault(r.module, []).append(r.entity_id)
+        for module_name, ids in by_module.items():
+            lookup = runtime.registry.get(f"{module_name}.lookup")
+            if lookup is None:
+                continue
+            for found in await lookup(ids=list(dict.fromkeys(ids))):
+                names[(module_name, str(found["id"]))] = found
+        rows: list[dict[str, Any]] = []
+        for r in refs:
+            found = names.get((r.module, r.entity_id))
+            record: Any = (
+                "(deleted)" if found is None else "Restricted" if found.get("restricted")
+                else {"text": found["name"], "href": found["url"]}
+            )  # fmt: skip
+            when = {"missing": _when(r.missing_since), "seen": _when(r.last_seen)}
+            rows.append({"record": record, "source_id": r.source_id, **when})
+        return templates.TemplateResponse(
+            request,
+            "core/connector_missing.html",
+            {
+                "page_title": f"No longer in {reg.decl.system}",
+                "current_module": "admin",
+                "reg": reg,
+                "source_type": source_type,
+                "rows": rows,
             },
         )
 

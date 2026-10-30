@@ -76,7 +76,7 @@ async def test_documents_and_assets_link_both_ways(database_url: str, tmp_path: 
         m = re.match(r"/docs/d/([^?]+)", r.headers["location"])
         assert m, r.headers["location"]
         slug = m[1]
-        await c.post(f"/api/docs/documents/{slug}/publish")
+        await c.post(f"/api/docs/documents/{slug}/publish?version=1")
 
         # The document shows the device by name; the device lists the document.
         page = (await c.get(f"/docs/d/{slug}")).text
@@ -123,7 +123,9 @@ async def test_ai_tools_read_and_propose(database_url: str, tmp_path: Path) -> N
         mcp = McpClient(MODULES)
         assert {n for n in await mcp.tool_names() if n.startswith("assets_")} == {
             "assets_get_record", "assets_list_proposals", "assets_list_records",
-            "assets_propose_change", "assets_propose_record", "assets_search"}  # fmt: skip
+            "assets_os_readiness", "assets_propose_change", "assets_propose_merge",
+            "assets_propose_record",
+            "assets_search"}  # fmt: skip
         async with itops_assets.module.session() as s:
             hq = await assets.create(s, ME, type_key="location", name=f"HQ {tag}")
             sql = await assets.create(s, ME, type_key="device", name=f"SQL-{tag}", fields={
@@ -148,7 +150,8 @@ async def test_ai_tools_read_and_propose(database_url: str, tmp_path: Path) -> N
         assert new["status"] == "pending" and new["review_url"].endswith("/assets/proposals")
         change = await mcp.call("assets_propose_change", id=str(sql.id), note="new address",
                                 fields={"primary_ip": "10.0.1.16", "location": None})  # fmt: skip
-        assert change["fields"] == {"kind": "Server", "primary_ip": "10.0.1.16"}
+        # Only what it changes (null clears), applied to the record as it is when approved.
+        assert change["fields"] == {"primary_ip": "10.0.1.16", "location": None}
         assert len(await mcp.call("assets_list_proposals")) == 2
         assert (await mcp.call("assets_get_record", id=str(sql.id)))["pending_proposals"]
         try:

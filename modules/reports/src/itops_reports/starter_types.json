@@ -48,5 +48,66 @@
       {"key": "previous_termination_date", "label": "Previously terminated", "kind": "date"},
       {"key": "is_turnover", "label": "Counts as turnover", "kind": "select", "options": ["Yes", "No"]}
     ]
+  },
+  {
+    "key": "print_job",
+    "name": "Print job",
+    "description": "A PrintService Event 307 record. Pages and bytes are reported by the spooler. Timestamps are UTC.",
+    "fields": [
+      {
+        "key": "time_created",
+        "label": "TimeCreated (UTC)",
+        "kind": "datetime",
+        "required": true
+      },
+      {
+        "key": "user",
+        "label": "User",
+        "kind": "longtext",
+        "required": false
+      },
+      {
+        "key": "computer",
+        "label": "Computer",
+        "kind": "longtext",
+        "required": false
+      },
+      {
+        "key": "printer",
+        "label": "Printer",
+        "kind": "longtext",
+        "required": true
+      },
+      {
+        "key": "document",
+        "label": "Document",
+        "kind": "longtext",
+        "required": false
+      },
+      {
+        "key": "pages",
+        "label": "Pages",
+        "kind": "number",
+        "required": true
+      },
+      {
+        "key": "bytes",
+        "label": "Bytes",
+        "kind": "number",
+        "required": true
+      },
+      {
+        "key": "server",
+        "label": "Print server",
+        "kind": "text",
+        "required": true
+      },
+      {
+        "key": "event_record_id",
+        "label": "Event record ID",
+        "kind": "text",
+        "required": true
+      }
+    ]
   }
 ]

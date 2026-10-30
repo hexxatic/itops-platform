@@ -77,6 +77,13 @@ def test_problems_are_capped() -> None:
                            dry_run=False, secrets=lambda _n: None)  # fmt: skip
     for i in range(600):
         ctx.problem(f"problem {i}")
-    assert len(ctx.problems) == 501 and ctx.problems[-1]["text"] == "More problems were left out."
+    assert len(ctx.problems) == 501
+    assert ctx.problems[-1]["text"] == "100 more problems weren't listed here."
+    ctx.note("decided x", url="/assets/r/1")
+    ctx.note("not a local page", url="https://example.com/")
+    assert ctx.problems[-2:] == [
+        {"item": "", "text": "decided x", "url": "/assets/r/1", "note": "1"},
+        {"item": "", "text": "not a local page", "note": "1"},
+    ]
     ctx.apply({"outcome": "failed", "problem": "bad"}, item="x")
     assert ctx.counts == {"failed": 1}

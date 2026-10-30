@@ -3,7 +3,6 @@
 {% block content %}
 {{ ui.breadcrumb([("Assets", "/assets/"), (type_name, "/assets/t/" ~ record.type_key), (record.name, None)]) }}
 {% call ui.page_header(record.name) %}
-  {{ ui.button("All " ~ type_noun ~ " records", href="/assets/t/" ~ record.type_key) }}
   {% if can_write and definition %}{{ ui.button("Edit", href="/assets/r/" ~ record.id ~ "/edit", variant="primary") }}{% endif %}
   {% if can_delete %}
     {{ ui.action_button("Delete", "/api/assets/records/" ~ record.id ~ "/delete", variant="danger",
@@ -11,21 +10,60 @@
   {% endif %}
 {% endcall %}
 {% if error %}{{ ui.alert(error, "danger") }}{% endif %}
+{% if proposed %}{% call ui.alert("", "info") %}{{ "A change" if proposed == 1 else proposed ~ " changes" }} to this record {{ "is" if proposed == 1 else "are" }} waiting for approval: <a href="/assets/proposals">Proposed changes</a>.{% endcall %}{% endif %}
 {% for src in sources %}
   {% if src.missing_since %}
-    {{ ui.alert("No longer in " ~ src.system ~ " since " ~ src.missing_since ~ ". Check whether it's gone and delete it here if so.", "warning") }}
+    {{ ui.alert("No longer in " ~ src.system ~ " since " ~ src.missing_since ~ ". If it's really gone, delete it (Delete, above). If it's still in use, " ~ src.system ~ " has dropped or deactivated it: fix that there and the next sync clears this. If it's a second record of one machine, merge it into the other (below).", "warning") }}
   {% endif %}
 {% endfor %}
+{% for f in findings %}{{ ui.alert(f.text, "warning") }}{% endfor %}
+{% if (findings or accepted) and can_write %}
+  {% call ui.disclosure("Expected? Accept a warning as is" if findings else "Accepted warnings (" ~ accepted|length ~ ")") %}
+    {% if findings %}
+    <form method="post" action="/api/assets/records/{{ record.id }}/accept" class="stack">
+      <p class="muted">If a warning is expected for this device (a lab PC that's meant to be off the domain, say), accept it with the reason. It's hidden from the lists and the budget until something about it changes, then it shows again.</p>
+      {{ ui.select("code", "Warning", findings_options, required=True) }}
+      {{ ui.field("reason", "Why it's expected", required=True) }}
+      <div class="actions">{{ ui.button("Accept as is", type="submit") }}</div>
+    </form>
+    {% endif %}
+    {% for a in accepted %}
+      <p class="muted">Accepted by {{ a.by }}, {{ a.at }}: "{{ a.reason }}". {{ a.text }}</p>
+      {{ ui.action_button("Show it again", "/api/assets/records/" ~ record.id ~ "/unaccept/" ~ a.code) }}
+    {% endfor %}
+  {% endcall %}
+{% endif %}
+{% if computer_class[0] and not device %}
+<div class="row meta-row">{{ ui.badge(computer_class[0], "info") }}<span class="muted">{{ "set by a person" if computer_class[1] == "set" else "by model (Computer classes)" }}</span></div>
+{% endif %}
 {% if sources %}
 <div class="row meta-row">
   {% for src in sources %}{{ ui.badge("Synced from " ~ src.system, "info") }}<span class="muted">last seen {{ src.last_seen }}</span>{% endfor %}
 </div>
 {% endif %}
-{% if not definition %}{{ ui.alert("This record's type isn't published any more, so it can't be edited.", "warning") }}{% endif %}
+{% if not definition %}{% call ui.alert("", "warning") %}This record's type isn't published any more, so it can't be edited. An admin can publish the type again, or move its records to another type, on <a href="/assets/types">Manage types</a>.{% endcall %}{% endif %}
 
+{% if device %}
+{% call ui.card("At a glance") %}
+  {{ ui.table([("what", ""), ("value", "")], device.summary_rows) }}
+{% endcall %}
+{% for sec in device.sections %}
+{% call ui.card(sec.title) %}
+  {{ ui.field_values(sec.definition, values, links) }}
+  {% if sec.sources %}<p class="muted">From {{ sec.sources }}.</p>{% endif %}
+{% endcall %}
+{% endfor %}
+{% else %}
 {% call ui.card("Details") %}
   {% if definition %}{{ ui.field_values(definition, values, links) }}{% else %}<p class="muted">No details.</p>{% endif %}
 {% endcall %}
+{% endif %}
+{% if readiness %}
+  {% call ui.card("OS readiness") %}
+    {{ ui.table([("target", "Can it run"), ("ready", "Ready?"), ("why", "Why")], readiness) }}
+    <p class="muted"><a href="/assets/readiness">All devices</a></p>
+  {% endcall %}
+{% endif %}
 {% if documents %}
   {% call ui.card("Documents") %}
     {{ ui.table([("name", "Document"), ("field", "Linked as")], documents) }}
@@ -39,6 +77,15 @@
 {% if linked_from %}
   {% call ui.card("Linked from") %}
     {{ ui.table([("name", "Asset"), ("type", "Type"), ("field", "Linked as")], linked_from) }}
+  {% endcall %}
+{% endif %}
+{% if merge_choices %}
+  {% call ui.disclosure("Merge into another record") %}
+    <form method="post" action="/api/assets/records/{{ record.id }}/merge" class="stack">
+      <p class="muted">These records share a serial, MAC or host name with {{ record.name }}. If they're one thing, merge this one into the record to keep: its empty fields are filled from this one, its sources and links move over, and this record is deleted (its values stay in the activity history). Nothing is retired, so nothing changes in AD.</p>
+      {{ ui.select("into", "Keep", merge_choices, required=True) }}
+      <div class="actions">{{ ui.button("Merge and delete this record", type="submit", variant="danger") }}</div>
+    </form>
   {% endcall %}
 {% endif %}
 <p class="muted">Created {{ created }} by {{ created_by }}{% if updated and updated != created %} · changed {{ updated }} by {{ updated_by }}{% endif %}</p>

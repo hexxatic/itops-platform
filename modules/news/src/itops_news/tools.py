@@ -83,15 +83,15 @@ async def draft_post(
     title: str, category: str, markdown: str | None = None, html: str | None = None
 ) -> dict[str, Any]:
     """Draft a news post. It stays a DRAFT that only news writers see until a person
-    publishes it in the web UI; tell the user the returned `url` to review it. You cannot
-    publish."""
+    publishes it in the web UI; pass on the returned `next` (it has the `review_url`). You
+    cannot publish."""
     async with module.session() as s:
         post = await service.create(
             s, _who(), title=title, category=category, content=_content(markdown, html)
         )
         await s.commit()
         result = _summary(post)
-    return {**result, "next": f"Draft saved. A person reviews and publishes it: {result['url']}"}
+    return {**result, **module.review(f"/p/{post.slug}", "the draft")}
 
 
 async def update_draft(
@@ -116,7 +116,7 @@ async def update_draft(
         )  # fmt: skip
         await s.commit()
         result = _summary(post)
-    return {**result, "next": f"Draft saved. A person reviews and publishes it: {result['url']}"}
+    return {**result, **module.review(f"/p/{post.slug}", "the draft")}
 
 
 # Registered here so their descriptions carry the content guidance (AI clients read the

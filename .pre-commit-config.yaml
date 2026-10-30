@@ -27,9 +27,11 @@ repos:
         language: system
         pass_filenames: false
         files: ^(core|modules|private)/
+      # Only the tests for what the push changes (tools/prepush_tests.py); CI runs them all.
       - id: pytest
-        name: pytest (incl. module conformance)
-        entry: uv run pytest -q
+        name: pytest (what the push changes; CI runs everything)
+        entry: uv run python -I tools/prepush_tests.py
         language: system
         pass_filenames: false
+        always_run: true
         stages: [pre-push]

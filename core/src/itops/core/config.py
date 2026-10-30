@@ -10,10 +10,17 @@ from __future__ import annotations
 from functools import lru_cache
 from typing import Literal
 
-from pydantic import Field, SecretStr
+from pydantic import BaseModel, Field, SecretStr
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 from itops.core.db import odbc_url
+
+
+class SiteConfig(BaseModel):
+    """One site (ADR 0027): its address and the title its header shows."""
+
+    url: str
+    title: str = ""
 
 
 class Settings(BaseSettings):
@@ -34,6 +41,10 @@ class Settings(BaseSettings):
     # clients in the cloud like ChatGPT. Set it to turn on OAuth for MCP; only /mcp/, the
     # OAuth endpoints and their discovery documents answer on that host. Empty: off.
     mcp_public_url: str = ""
+    # ADR 0027: other sites IT-Ops answers as, each on its own host and made of the modules
+    # whose manifest names it, e.g. '{"help": {"url": "https://help.example.com", "title":
+    # "IT Help"}}'. Add each host to the Entra app's redirect URIs (<url>/auth/callback).
+    sites: dict[str, SiteConfig] = Field(default_factory=dict[str, SiteConfig])
     # Re-check token owners against AD hourly (and at each OAuth refresh): leavers' tokens
     # stop working (core/directory.py). Entra mode on Windows only.
     directory_check: bool = True
@@ -71,9 +82,12 @@ class Settings(BaseSettings):
     entra_tenant_id: str = ""
     entra_client_id: str = ""
     entra_client_secret: SecretStr = SecretStr("")
-    # Group (sAMAccountName) per role; each role includes the ones before it.
+    # Group (sAMAccountName) per role; each role includes the ones before it. "staff" holds
+    # only the permissions declared for everyone (ADR 0027): a group, "*" for anyone in the
+    # tenant, or "" for no one.
     role_groups: dict[str, str] = Field(
         default_factory=lambda: {
+            "staff": "",
             "reader": "App-ITOps-Readers",
             "editor": "App-ITOps-Editors",
             "publisher": "App-ITOps-Publishers",

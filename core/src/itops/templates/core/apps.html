@@ -1,0 +1,29 @@
+{% extends "core/shell.html" %}
+{% import "core/components.html" as ui %}
+{% block content %}
+{{ ui.breadcrumb([("Admin", "/admin"), ("Apps", None)]) }}
+{{ ui.page_header("Apps", "Other internal applications that read IT-Ops as themselves, not as a person. Each token only reads, only through the REST API, and never sees restricted areas.") }}
+
+{% call ui.card("Live app tokens") %}
+{{ ui.table([("app", "App"), ("name", "Name"), ("prefix", "Token"), ("permissions", "Can read"), ("expires", "Expires"), ("used", "Last used"), ("revoke", "")],
+            token_rows, empty="No app tokens.") }}
+{% endcall %}
+
+{% call ui.card("Issue a token") %}
+{% if new_token %}
+{{ ui.alert("Copy the new token now and put it in the app's configuration. It won't be shown again.", "warning") }}
+<pre class="token-reveal"><code>{{ new_token }}</code></pre>
+{% endif %}
+{% if error %}{{ ui.alert(error, "danger") }}{% endif %}
+<form method="post" action="/apps/tokens" class="stack">
+  {{ ui.field("slug", "Short name", value=slug, required=True, help="Lower case, e.g. “reporting”. The audit trail shows it as app:<short name>.") }}
+  {{ ui.field("name", "Name", value=name, required=True, help="What it is, e.g. “Reporting app (test)”.") }}
+  <div class="field">
+    <span class="field-label">Can read</span>
+    {% for p in permission_choices %}{{ ui.checkbox(p.field, p.label, checked=p.checked) }}{% endfor %}
+  </div>
+  {{ ui.select("days", "Expires after", day_options, selected=max_days) }}
+  {{ ui.button("Issue token", type="submit", variant="primary") }}
+</form>
+{% endcall %}
+{% endblock %}

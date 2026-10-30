@@ -67,14 +67,15 @@ class Permission(BaseModel):
     ``grant``: ``"role"`` (the default) means roles grant it by its last word (reader
     ``*.read``, editor ``*.write``, publisher ``*.publish``); ``"group"`` means no role
     does: the deployment names the AD groups that hold it (``ITOPS_PERMISSION_GROUPS``),
-    for things only a few people should have (ADR 0014). Admins hold everything either
-    way."""
+    for things only a few people should have (ADR 0014); ``"everyone"`` means anyone who can
+    sign in holds it, including the staff role that holds nothing else (ADR 0027). Admins
+    hold everything either way."""
 
     model_config = ConfigDict(extra="forbid", frozen=True)
 
     description: str
     human_only: bool = False
-    grant: Literal["role", "group"] = "role"
+    grant: Literal["role", "group", "everyone"] = "role"
 
 
 SCHEDULE_RE = re.compile(r"^(manual|every \d+[mhd]|daily \d{2}:\d{2})$")
@@ -261,6 +262,11 @@ class Manifest(BaseModel):
     version: str
     title: str = ""
     description: str = ""
+    # Where its nav item sits (lowest first); ties keep load order.
+    nav_order: int = 100
+    # The site its pages make up (ADR 0027), e.g. "help": served on that site's host (from
+    # ITOPS_SITES) with its own menu, and kept out of IT-Ops' menu and search. "" = IT-Ops.
+    site: str = ""
     requires: list[str] = Field(default_factory=list[str])
     optional: list[str] = Field(default_factory=list[str])
     # Service names this module provides via the registry (short names: "search").
@@ -280,6 +286,13 @@ class Manifest(BaseModel):
     # or keep out of AI ("collection" = "Collection"). Kind "type" means the module's
     # record types (keys = type keys), which the core's type tools then filter too.
     areas: dict[str, str] = Field(default_factory=dict[str, str])
+
+    @field_validator("site")
+    @classmethod
+    def _site(cls, v: str) -> str:
+        if v and not SECRET_RE.match(v):
+            raise ValueError(f"site {v!r}: lowercase letters, digits and underscores")
+        return v
 
     @field_validator("areas")
     @classmethod
@@ -378,6 +391,10 @@ class Manifest(BaseModel):
     @property
     def group_granted_permissions(self) -> frozenset[str]:
         return frozenset(k for k, p in self.permissions.items() if p.grant == "group")
+
+    @property
+    def everyone_permissions(self) -> frozenset[str]:
+        return frozenset(k for k, p in self.permissions.items() if p.grant == "everyone")
 
     @property
     def human_only_permissions(self) -> frozenset[str]:

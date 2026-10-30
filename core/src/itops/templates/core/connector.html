@@ -1,8 +1,8 @@
 {% extends "core/shell.html" %}
 {% import "core/components.html" as ui %}
 {% block content %}
+{{ ui.breadcrumb([("Admin", "/admin"), ("Connectors", "/connectors"), (reg.decl.title, None)]) }}
 {% call ui.page_header(reg.decl.title, reg.decl.description or reg.decl.system) %}
-  {{ ui.button("All connectors", href="/connectors") }}
   {% if not running %}
     <form method="post" action="/connectors/{{ reg.key }}/run" class="inline-form">
       <input type="hidden" name="dry_run" value="true">

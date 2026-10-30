@@ -1,9 +1,9 @@
 {% extends "core/shell.html" %}
 {% import "core/components.html" as ui %}
 {% block content %}
+{% if post %}{{ ui.breadcrumb([("News", "/news/"), (post.title, "/news/p/" ~ post.slug), ("Edit", None)]) }}{% else %}{{ ui.breadcrumb([("News", "/news/"), ("New post", None)]) }}{% endif %}
 {% if post %}
   {% call ui.page_header("Edit: " ~ post.title, "Changes to a published post go live when you save." if published else "Saving keeps it a draft. Publishing is a separate step.") %}
-    {{ ui.button("Back to post", href="/news/p/" ~ post.slug) }}
   {% endcall %}
 {% else %}
   {{ ui.page_header("New post", "Saving creates a draft. Publishing is a separate step.") }}

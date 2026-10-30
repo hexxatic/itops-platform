@@ -2,8 +2,9 @@
 
 Tools run *via AI* as the connected user: they see the reports and datasets that person may
 see, **never money columns** (``reports.costs`` doesn't reach AI connections). An AI
-connection can draft a report; a person with ``reports.publish`` publishes it. Adding rows
-to typed-in datasets is for people (not yet a tool).
+connection can draft a report; a person with ``reports.publish`` publishes it. It can propose
+rows for a typed-in dataset (money included: proposing isn't seeing); a person approves
+them on the dataset's page. It can propose a typed-in dataset too; an admin creates it.
 """
 
 from __future__ import annotations
@@ -14,7 +15,7 @@ from typing import Any
 from itops_reports import service
 from itops_reports.app import module
 from itops_reports.engine import INTERVALS, MEASURES, OPS, evaluate, measure_name
-from itops_reports.service import DefinitionInput, ReportsError
+from itops_reports.service import DatasetInput, DefinitionInput, ReportsError
 
 CONFIG_HELP = (
     "`config` is JSON: {filters: [{field, op, value}], window_days?, tiles: [{label, measure: "
@@ -52,7 +53,8 @@ async def list_reports() -> list[dict[str, Any]]:
 async def list_datasets() -> list[dict[str, Any]]:
     """Datasets you can see, with their columns (key, label, kind), where rows come from
     (synced by a connector or typed in), the time column and how long rows are kept. Money
-    columns are not listed."""
+    columns are listed apart (`money_columns`): you may give them when proposing rows, but
+    their values are never shown to you."""
     out: list[dict[str, Any]] = []
     async with module.session() as s:
         for ds in await service.datasets(s):
@@ -68,6 +70,11 @@ async def list_datasets() -> list[dict[str, Any]]:
                     "rows": await service.count(s, ds),
                     "columns": [
                         {"key": f.key, "label": f.label, "kind": f.kind} for f in cols.visible
+                    ],
+                    "money_columns": [
+                        {"key": f.key, "label": f.label}
+                        for f in cols.definition.fields
+                        if f.key in cols.hidden
                     ],
                 }
             )
@@ -167,4 +174,123 @@ async def draft_report(
         "key": d.key,
         "status": "draft, waiting for a person to publish it",
         "url": module.url(f"/r/{d.key}?draft=1"),
+        **module.review(f"/r/{d.key}?draft=1", "the draft"),
     }
+
+
+@module.tool(
+    permission="reports.write",
+    writes=True,
+    description=(
+        "Propose rows for a typed-in dataset (mode manual). `rows` is a list of {column: value}, "
+        "columns named by key or label (reports_list_datasets lists them; money columns may be "
+        "given too). `note` says where the rows come from, for the reviewer. Every row is "
+        "checked; nothing is added until a person approves the batch on the dataset's page. "
+        "`dataset` may be one you proposed with reports_propose_dataset: the rows wait until "
+        "an admin creates it. Propose each batch once: re-proposing duplicates the rows."
+    ),
+)
+async def propose_rows(dataset: str, rows: list[dict[str, Any]], note: str) -> dict[str, Any]:
+    async with module.session() as s:
+        ds = await service.dataset(s, dataset)
+        waiting_on = None
+        if ds is None:
+            waiting_on = await service.pending_dataset(s, dataset)
+            if waiting_on is None:
+                raise ReportsError(f"No dataset '{dataset}' (propose it first).")
+            ds = service.proposed_dataset(waiting_on)
+        p = await service.propose_rows(s, ds, rows, note, waiting_on=waiting_on)
+        await s.commit()
+    return {
+        "proposal": p.id,
+        "rows": p.row_count,
+        "status": "waiting for a person to approve the rows"
+        + (", once an admin creates the dataset" if waiting_on else ""),
+        **module.review("/datasets" if waiting_on else f"/d/{dataset}#proposals", "the rows"),
+    }
+
+
+@module.tool(
+    permission="reports.write",
+    writes=True,
+    description=(
+        "Propose a typed-in dataset: a table people (or your proposed rows) fill in. "
+        "`type_key` is a published column type (itops_list_types; e.g. purchase), `key` "
+        "lowercase letters, digits and dashes (default: from the title), `time_column` a date "
+        "column for trends, `retention_days` how long rows are kept (empty: forever). `note` "
+        "says what it's for. An admin creates it; then reports_propose_rows can fill it (you "
+        "can propose rows for it right away: they wait)."
+    ),
+)
+async def propose_dataset(
+    title: str,
+    type_key: str,
+    note: str,
+    key: str | None = None,
+    description: str = "",
+    time_column: str | None = None,
+    retention_days: int | None = None,
+) -> dict[str, Any]:
+    async with module.session() as s:
+        dp = await service.propose_dataset(
+            s,
+            DatasetInput(
+                title=title,
+                type_key=type_key,
+                key=key,
+                description=description,
+                time_field=time_column,
+                retention_days=retention_days,
+            ),
+            note,
+        )
+        await s.commit()
+    return {
+        "dataset_proposal": dp.id,
+        "key": dp.key,
+        "status": "waiting for an admin to create it",
+        **module.review("/datasets#proposals", "the dataset"),
+    }
+
+
+@module.tool(permission="reports.read")
+async def list_row_proposals(dataset: str | None = None) -> list[dict[str, Any]]:
+    """Batches of proposed rows still waiting for a person (optionally for one dataset, also
+    a proposed one): how many rows, the note, who proposed them and when. The rows' values
+    aren't returned."""
+    async with module.session() as s:
+        ds = None
+        if dataset:
+            ds = await service.dataset(s, dataset)
+            if ds is None and await service.pending_dataset(s, dataset) is None:
+                raise ReportsError(f"No dataset '{dataset}'.")
+        found = await service.proposals(s, ds)
+        waiting = (
+            [(p, dp) for p, dp in await service.rows_waiting(s) if not dataset or dp.key == dataset]
+            if not ds
+            else []
+        )
+    return [
+        {
+            "proposal": p.id,
+            "dataset": d.key,
+            "rows": p.row_count,
+            "note": p.note,
+            "proposed_by": p.proposed_by,
+            "proposed_at": p.proposed_at.isoformat(timespec="minutes"),
+            "review_url": module.url(f"/d/{d.key}#proposals"),
+        }
+        for p, d in found
+    ] + [
+        {
+            "proposal": p.id,
+            "dataset": dp.key,
+            "rows": p.row_count,
+            "note": p.note,
+            "proposed_by": p.proposed_by,
+            "proposed_at": p.proposed_at.isoformat(timespec="minutes"),
+            "waiting_for": "an admin to create the proposed dataset",
+            "review_url": module.url("/datasets#proposals"),
+        }
+        for p, dp in waiting
+    ]

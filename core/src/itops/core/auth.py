@@ -29,7 +29,7 @@ class Principal:
     display_name: str
     permissions: frozenset[str]
     via_ai: bool = False
-    client: str = "web"  # "web" | "api" | "mcp" | "connector" (audit attribution)
+    client: str = "web"  # "web" | "api" | "mcp" | "connector" | "app" (audit attribution)
     # Their AD groups (sAMAccountNames, lower case): what restricted areas they may see
     # (ADR 0012, core/areas.py). Roles still decide what they may do.
     groups: frozenset[str] = frozenset()

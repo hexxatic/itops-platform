@@ -51,7 +51,7 @@ async def test_attachment_lifecycle(database_url: str, tmp_path: Path) -> None:
         assert d.content == b"%PDF-1.7" and d.headers["content-disposition"].startswith(
             "attachment"
         )
-        await c.post(f"/api/docs/documents/{slug}/publish")
+        await c.post(f"/api/docs/documents/{slug}/publish?version=1")
 
         # A draft adds one and removes another; readers keep the published list.
         async with module.session() as s:
@@ -84,7 +84,7 @@ async def test_attachment_lifecycle(database_url: str, tmp_path: Path) -> None:
         assert names == ["Quote.msg", "Runbook.pdf"]
         assert doc_json["attachments"][0]["url"].startswith("http")
 
-        await c.post(f"/api/docs/documents/{slug}/publish")
+        await c.post(f"/api/docs/documents/{slug}/publish?version=3")
         async with module.session() as s:
             doc = await service.by_slug(s, slug)
             assert doc is not None

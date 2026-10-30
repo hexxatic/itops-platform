@@ -12,7 +12,7 @@
     <p class="muted">A local AI model is reading the file; this usually takes one to three minutes. You can leave this page and come back from the contract.</p>
   {% endcall %}
 {% elif run.status == "failed" %}
-  {{ ui.alert("Couldn't read the file: " ~ run.error, "danger") }}
+  {{ ui.alert("Couldn't read the file (" ~ run.error ~ "), so nothing was suggested. Try a PDF or Word copy of it, or fill the contract in by hand.", "danger") }}
   <div class="actions">
     {{ ui.action_button("Try again", "/api/contracts/terms/" ~ term.id ~ "/suggest/" ~ run.file_id, variant="primary") }}
     {{ ui.button("Back to contract", href="/contracts/c/" ~ contract.id) }}

@@ -1,15 +1,22 @@
 {% extends "core/shell.html" %}
 {% import "core/components.html" as ui %}
 {% block content %}
+{{ ui.breadcrumb([("Assets", "/assets/"), ("Proposed changes", None)]) }}
 {% call ui.page_header("Proposed changes", "AI can suggest new assets and changes; nothing is applied until a person approves it.") %}
-  {{ ui.button("All assets", href="/assets/") }}
 {% endcall %}
 {% if error %}{{ ui.alert(error, "danger") }}{% endif %}
 {% for p in items %}
   {% call ui.card(p.title) %}
     <p class="muted">Proposed by {{ p.by }} · {{ p.when }}{% if p.href %} · <a href="{{ p.href }}">Open the current record</a>{% endif %}</p>
     {% if p.note %}<p>{{ p.note }}</p>{% endif %}
-    {% if p.is_change %}
+    {% if p.is_merge %}
+      {% if p.kept_href %}<p><a href="{{ p.kept_href }}">Open the record kept</a></p>{% endif %}
+      {% if p.problem %}{{ ui.alert(p.problem, "warning") }}{% else %}
+      <p>Approving deletes {{ p.merged_name }} and moves its sources and links to the record kept.</p>
+      {{ ui.table([("field", "Field"), ("after", "Filled in on the record kept")], p.rows, empty="Fills nothing: the record kept already has every value.") }}
+      {% endif %}
+    {% elif p.is_change %}
+      {% if p.problem %}{{ ui.alert(p.problem, "warning") }}{% endif %}
       {{ ui.table([("field", "Field"), ("before", "Now"), ("after", "Proposed")], p.rows, empty="No differences from the current record.") }}
     {% else %}
       {{ ui.table([("field", "Field"), ("after", "Value")], p.rows, empty="Just the name, no other values.") }}

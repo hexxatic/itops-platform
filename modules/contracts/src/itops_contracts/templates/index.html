@@ -2,7 +2,7 @@
 {% import "core/components.html" as ui %}
 {% block content %}
 {% call ui.page_header("Contracts", "IT contracts: what's coming up for renewal, what each term costs, and who decides.") %}
-  {% if can_costs %}{{ ui.button("Costs", href="/contracts/costs") }}{% endif %}
+  {% if can_costs %}{{ ui.button("Costs", href="/contracts/costs") }}{{ ui.button("Proposed costs" ~ (" (" ~ proposed ~ ")" if proposed else ""), href="/contracts/proposals") }}{% endif %}
   {% if can_write %}{{ ui.button("New contract", href="/contracts/new", variant="primary") }}{% endif %}
 {% endcall %}
 {% if error %}{{ ui.alert(error, "danger") }}{% endif %}
@@ -15,8 +15,16 @@
 {% endcall %}
 
 {% if drafts %}
-{% call ui.card("Drafted by AI, waiting for you") %}
+{% call ui.card(("Waiting for you: AI drafts to accept" if can_approve else "Drafted by AI") ~ " (" ~ drafts|length ~ ")") %}
+{% if not can_approve %}<p class="muted">Someone who can approve contracts accepts or discards each one.</p>{% endif %}
 {{ ui.table([("name", "Contract"), ("vendor", "Vendor"), ("by", "Drafted by"), ("when", "When")], drafts) }}
+{% endcall %}
+{% endif %}
+
+{% if files %}
+{% call ui.card("Waiting for you: files read for a new contract (" ~ files|length ~ ")") %}
+<p class="muted">Check what the model found in each and create the contract, or discard the file if it isn't one.</p>
+{{ ui.table([("file", "File"), ("when", "Read")], files) }}
 {% endcall %}
 {% endif %}
 

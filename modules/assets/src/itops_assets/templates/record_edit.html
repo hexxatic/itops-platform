@@ -1,9 +1,9 @@
 {% extends "core/shell.html" %}
 {% import "core/components.html" as ui %}
 {% block content %}
+{% if record %}{{ ui.breadcrumb([("Assets", "/assets/"), (type_name, "/assets/t/" ~ record.type_key), (record.name, "/assets/r/" ~ record.id), ("Edit", None)]) }}{% else %}{{ ui.breadcrumb([("Assets", "/assets/"), (type_name, None), ("New", None)]) }}{% endif %}
 {% if record %}
   {% call ui.page_header("Edit: " ~ record.name, type_name) %}
-    {{ ui.button("Back", href="/assets/r/" ~ record.id) }}
   {% endcall %}
 {% else %}
   {{ ui.page_header("New " ~ type_noun, definition.description) }}

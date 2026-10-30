@@ -81,8 +81,10 @@ def _proposal(p: Proposal) -> dict[str, Any]:
         "proposal": p.id,
         "status": p.status,
         "change_to": str(p.record_id) if p.record_id else None,
+        "merge_into": str(p.merge_into) if p.merge_into else None,
         "type": p.type_key,
         "name": p.name,
+        # A change: only the fields it changes (null clears one).
         "fields": proposal_fields(p),
         "note": p.note,
         "proposed_by": p.proposed_by,
@@ -149,6 +151,57 @@ async def get_record(id: str) -> dict[str, Any]:
 
 
 @module.tool(permission="assets.read")
+async def os_readiness(target: str = "", status: str = "") -> list[dict[str, Any]]:
+    """Whether devices' hardware can run the operating system they'd move to (e.g. Windows
+    11 for a Windows 10 PC), from their processor, memory, storage and TPM: for each OS
+    target, its requirements, counts (ready / not_ready / unknown) and the devices with why.
+    `target` narrows to one OS by name (e.g. "Windows 11"); `status` to ready, not_ready or
+    unknown. Retired and ignored devices aren't checked."""
+    if status and status not in ("ready", "not_ready", "unknown"):
+        raise AssetsError("status is ready, not_ready or unknown.")
+    targets = {t.name.lower(): t for t in await service.os_target_list()}
+    out: list[dict[str, Any]] = []
+    for t in await service.readiness_report():
+        if target and t["name"].lower() != target.strip().lower():
+            continue
+        spec = targets[t["name"].lower()]
+        out.append(
+            {
+                "target": t["name"],
+                "checks_devices_running": spec.upgrades_from,
+                "needs": {
+                    "processor_on_list": bool(spec.processors),
+                    "min_memory_gb": spec.min_memory_gb,
+                    "min_storage_gb": spec.min_storage_gb,
+                    "min_tpm": spec.min_tpm,
+                },
+                "counts": t["counts"],
+                "devices": [
+                    {
+                        "id": d["id"],
+                        "name": d["name"],
+                        "model": d["model"],
+                        "runs": d["operating_system"],
+                        "processor": d["processor"],
+                        "memory_gb": d["memory_gb"],
+                        "storage_gb": d["storage_gb"],
+                        "tpm": d["tpm"],
+                        "ready": d["ready"],
+                        "why": d["why"],
+                        "url": module.absolute_url(d["url"]),
+                    }
+                    for d in t["devices"]
+                    if not status or d["ready"] == status
+                ],
+                "page": module.absolute_url("/assets/readiness"),
+            }
+        )
+    if target and not out:
+        raise AssetsError(f"There's no OS target called {target!r}.")
+    return out
+
+
+@module.tool(permission="assets.read")
 async def list_proposals() -> list[dict[str, Any]]:
     """Asset changes waiting for a person to approve or reject (from any AI client), oldest
     first. Check here before proposing something that may already be waiting."""
@@ -172,7 +225,7 @@ async def propose_record(
         )
         await s.commit()
         result = _proposal(p)
-    return {**result, "next": f"Proposed. A person must approve it: {result['review_url']}"}
+    return {**result, **module.review("/proposals", "the proposal")}
 
 
 async def propose_change(
@@ -187,21 +240,38 @@ async def propose_change(
     if not note.strip():
         raise AssetsError("Give a short note saying why, for the person who reviews it.")
     record = await _record(id)
-    merged = {**record_fields(record)}
-    for key, value in (fields or {}).items():
-        if value is None or value == "" or value == []:
-            merged.pop(key, None)
-        else:
-            merged[key] = value
     async with module.session() as s:
         current = await service.get(s, record.id)
         assert current is not None
+        # Only what changes: on approval it's applied to the record as it is then.
         p = await service.propose(
-            s, _who(), record=current, name=name or current.name, fields=merged, note=note
+            s, _who(), record=current, name=name or current.name, fields=fields or {}, note=note
         )
         await s.commit()
         result = _proposal(p)
-    return {**result, "next": f"Proposed. A person must approve it: {result['review_url']}"}
+    return {**result, **module.review("/proposals", "the proposal")}
+
+
+@module.tool(permission="assets.write", writes=True)
+async def propose_merge(id: str, into: str, note: str) -> dict[str, Any]:
+    """Propose MERGING two records that are one thing (e.g. one machine imported from two
+    systems): asset `id` is merged into asset `into`, which is kept. Nothing changes until a
+    person approves it on the Proposed changes page; tell the user the returned
+    `review_url`. You cannot approve.
+
+    On approval the kept record's empty fields are filled from the other, its sources and
+    links move over, and the other is deleted (its values stay in the activity history).
+    Keep the record that is synced and current. Don't propose retiring a duplicate: Retired
+    means the machine itself is out of service. `note` says why they're the same (e.g.
+    'same serial FPH1GT3'). Read both first with get_record."""
+    if not note.strip():
+        raise AssetsError("Give a short note saying why they're one thing, for the reviewer.")
+    record, kept = await _record(id), await _record(into)
+    async with module.session() as s:
+        p = await service.propose_merge(s, _who(), record, kept, note=note)
+        await s.commit()
+        result = _proposal(p)
+    return {**result, **module.review("/proposals", "the proposal")}
 
 
 # Registered here so their descriptions carry the fields guidance (AI clients read the tool

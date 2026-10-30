@@ -1,0 +1,49 @@
+{#- The Devices list (devices.py): filters, review views, paging, download and a bulk change. -#}
+{% if error %}{{ ui.alert(error, "danger") }}{% endif %}
+{% if done is not none %}{{ ui.alert(done ~ " device" ~ ("s" if done != "1" else "") ~ " changed.", "success") }}{% endif %}
+<div class="actions">
+  <span class="muted">Review:</span>
+  {% for v in views %}{{ ui.button(v.label, href=v.href) }}{% endfor %}
+  {{ ui.button("Clear filters", href="/assets/t/device") }}
+</div>
+{% call ui.card() %}
+<form method="get" action="/assets/t/device" class="stack">
+  <div class="grid">
+    {{ ui.field("q", "Search", f.q, help="Name, host name, IP, model, serial, maker or OS") }}
+    {{ ui.select("status", "Status", options.status, f.status) }}
+    {{ ui.select("cls", "Class", options.cls, f.cls) }}
+    {{ ui.select("kind", "Kind", options.kind, f.kind) }}
+  </div>
+  <div class="grid">
+    {{ ui.select("inuse", "In use", options.inuse, f.inuse) }}
+    {{ ui.select("source", "Known to", options.source, f.source) }}
+    {{ ui.select("model", "Model", options.model, f.model) }}
+    {{ ui.select("disagree", "Sources", options.disagree, f.disagree) }}
+    {{ ui.select("sort", "Sort by", options.sort, f.sort) }}
+  </div>
+  <div class="actions">{{ ui.button("Show", type="submit", variant="primary") }}</div>
+</form>
+{% endcall %}
+{% call ui.card(total ~ " device" ~ ("s" if total != 1 else "") ~ (" · page " ~ page ~ " of " ~ pages if pages > 1 else "")) %}
+  {{ ui.table(columns, rows, empty="No devices match these filters.") }}
+  <div class="actions">
+    {% if prev %}{{ ui.button("Previous", href=prev) }}{% endif %}
+    {% if next %}{{ ui.button("Next", href=next) }}{% endif %}
+    {{ ui.export_links(download) }}
+  </div>
+  <p class="muted">In use: seen by a scan or Sophos within 90 days, else signed in to AD (the device itself is trusted over AD). Known to: the systems that sync it now. * a person set the class.</p>
+{% endcall %}
+{% if can_write and total %}
+{% call ui.disclosure("Change all " ~ total ~ " device" ~ ("s" if total != 1 else "") ~ " shown") %}
+<form method="post" action="/api/assets/devices/bulk" class="stack">
+  {% for k, v in bulk_query.items() %}<input type="hidden" name="{{ k }}" value="{{ v }}">{% endfor %}
+  <input type="hidden" name="expected" value="{{ total }}">
+  <div class="grid">
+    {{ ui.select("set_status", "Set status", bulk_statuses) }}
+    {{ ui.select("set_class", "Set class", bulk_classes) }}
+  </div>
+  <p class="muted">Every device matching the filters above, not just this page. Each is an ordinary edit in its history; a status change syncs to AD.</p>
+  <div class="actions">{{ ui.button("Change " ~ total ~ " device" ~ ("s" if total != 1 else ""), type="submit", variant="primary") }}</div>
+</form>
+{% endcall %}
+{% endif %}

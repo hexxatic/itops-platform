@@ -1,0 +1,28 @@
+{% extends "core/shell.html" %}
+{% import "core/components.html" as ui %}
+{% block content %}
+{{ ui.breadcrumb([("How-tos", "/kb/"), (article.collection.name, "/kb/?collection=" ~ article.collection.slug), (article.title, None)]) }}
+{{ ui.page_header(article.title, ("From IT's documentation, updated " ~ updated ~ ".") if updated else "From IT's documentation.") }}
+{% if tags %}<div class="row meta-row">{% for t in tags %}{{ ui.badge(t, "info") }}{% endfor %}</div>{% endif %}
+
+{% call(part) ui.reader(blocks, toc) %}
+  {% if part == "side" and attachments %}
+    <div id="attachments">{% call ui.card("Downloads (" ~ attachments|length ~ ")") %}{{ ui.attachment_list(attachments) }}{% endcall %}</div>
+  {% elif part == "bottom" %}
+    <div id="feedback">
+    {% call ui.card("Did this help?") %}
+      {% if thanks %}{{ ui.alert("Thanks, IT will see your answer.", "success") }}{% endif %}
+      {% if error %}{{ ui.alert(error, "danger") }}{% endif %}
+      {% if mine and not thanks %}<p class="muted">You said it {{ "helped" if mine.helpful else "didn't help" }}. You can change your answer.</p>{% endif %}
+      <form method="post" action="/api/kb/feedback/{{ article.slug }}" class="stack">
+        {{ ui.field("comment", "Anything we should add or fix? (optional)", value=comment, type="textarea") }}
+        <div class="row">
+          {{ ui.button("Yes, it helped", type="submit", variant="primary", attrs={"name": "helpful", "value": "yes"}) }}
+          {{ ui.button("No", type="submit", attrs={"name": "helpful", "value": "no"}) }}
+        </div>
+      </form>
+    {% endcall %}
+    </div>
+  {% endif %}
+{% endcall %}
+{% endblock %}

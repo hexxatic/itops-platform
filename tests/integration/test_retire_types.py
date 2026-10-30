@@ -46,7 +46,7 @@ async def make_docs(type_key: str, n: int) -> list[str]:
                     content=Content(blocks=[TextBlock(html="<p>x</p>")]),
                     fields={"owner": "Pat"}, tags=[],
                 )  # fmt: skip
-                await docs.publish(s, ME, doc)
+                await docs.publish(s, ME, doc, version=1)
                 ids.append(str(doc.id))
         await s.commit()
     return ids

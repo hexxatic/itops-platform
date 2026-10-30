@@ -35,7 +35,7 @@ from sqlalchemy import text
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
-from itops.core import auth
+from itops.core import auth, problems
 from itops.core.audit import AuditLog
 from itops.core.connectors import SecretReader, read_secret, summarize, utcnow
 from itops.core.manifest import ActionDecl
@@ -84,11 +84,12 @@ class ActionRun:
     inputs: dict[str, Any]
     progress: dict[str, Any]
     counts: dict[str, int]
-    problems: list[dict[str, str]]
+    problems: list[dict[str, str]]  # to act on (``notes`` only inform)
     log: str
     summary: str
     request_id: int | None
     cancel_requested: bool
+    notes: list[dict[str, str]] = field(default_factory=list[dict[str, str]])
 
     @property
     def duration(self) -> str:
@@ -145,6 +146,7 @@ def _json(value: Any, default: Any) -> Any:
 
 
 def _run_row(r: Any) -> ActionRun:
+    found, notes = problems.split(_json(r[10], []))
     return ActionRun(
         id=r[0],
         action=r[1],
@@ -156,7 +158,8 @@ def _run_row(r: Any) -> ActionRun:
         inputs=_json(r[7], {}),
         progress=_json(r[8], {}),
         counts=_json(r[9], {}),
-        problems=_json(r[10], []),
+        problems=found,
+        notes=notes,
         log=r[11] or "",
         summary=r[12] or "",
         request_id=r[13],
@@ -204,7 +207,7 @@ class ActionContext:
         self.run_id = run_id
         self.inputs = inputs
         self.counts: dict[str, int] = {}
-        self.problems: list[dict[str, str]] = []
+        self.report = problems.Report(MAX_PROBLEMS)
         self.progress: dict[str, Any] = {}
         self.lines: list[str] = []
         self.changes = 0
@@ -228,11 +231,22 @@ class ActionContext:
         self.counts[outcome] = self.counts.get(outcome, 0) + n
         self.changes += 1
 
-    def problem(self, message: str, *, item: str | None = None) -> None:
-        """Something a person should look at (the run carries on)."""
+    @property
+    def problems(self) -> list[dict[str, str]]:
+        """Everything reported so far, problems and notes (as stored)."""
+        return self.report.entries
+
+    def problem(self, message: str, *, item: str | None = None, url: str | None = None) -> None:
+        """Something a person should act on (the run carries on). Say what happened, what it
+        affects and what to do; ``url``: the IT-Ops page where they do it."""
         self.changes += 1
-        if len(self.problems) < MAX_PROBLEMS:
-            self.problems.append({"item": (item or "")[:300], "text": message[:1000]})
+        self.report.add(message, item=item, url=url)
+
+    def note(self, message: str, *, item: str | None = None, url: str | None = None) -> None:
+        """Something worth knowing that needs no action: listed under Notes, and the run
+        still counts as succeeded."""
+        self.changes += 1
+        self.report.add(message, item=item, url=url, note=True)
 
     def log(self, line: str) -> None:
         """A line of output for the run page (kept to a sensible size; never put secrets
@@ -254,7 +268,10 @@ class ActionContext:
         env_name = f"ITOPS_{self.key.split('.', 1)[0]}_{name}".upper()
         value = self._secrets(env_name)
         if not value:
-            raise ActionError(f"{env_name} isn't set on this server")
+            raise ActionError(
+                f"{env_name} isn't set on this server, so it can't run. An admin sets it in "
+                "the server's .env file; then run it again."
+            )
         return value
 
     async def powershell(self, computer: str, endpoint: str, command: str) -> str:
@@ -465,7 +482,9 @@ class ActionRunner:
         permission, in the web UI. Raises ActionBusy (who and when) if it's running."""
         action = self._actions.get(key)
         if action is None:
-            raise ActionError(f"no tool {key!r}")
+            raise ActionError(
+                f"There's no tool {key!r} (it may have been removed): pick one from the Tools page."
+            )
         who = _require_human_with(action.decl.permission)
         inputs = self.validate_inputs(action, raw_inputs or {})
         async with self._maker()() as s:
@@ -520,7 +539,10 @@ class ActionRunner:
         run = await self.run(run_id)
         action = self._actions.get(run.action) if run else None
         if run is None or action is None:
-            raise ActionError("no such run")
+            raise ActionError(
+                "That run doesn't exist any more: find it under its tool's "
+                "recent runs on the Tools page."
+            )
         _require_human_with(action.decl.permission)
         if run.status != "running":
             raise ActionError("That run has already finished.")
@@ -562,21 +584,30 @@ class ActionRunner:
         try:
             async with asyncio.timeout(action.decl.timeout * 60):
                 await action.fn(ctx)
-            if ctx.problems:
+            if ctx.report.has_problems:
                 status = "problems"
         except asyncio.CancelledError:
             status = "cancelled"
             ctx.log("Cancelled.")
         except TimeoutError:
             status = "failed"
-            ctx.problem(f"Stopped: it ran longer than its {action.decl.timeout}-minute timeout.")
+            ctx.problem(
+                f"Stopped: it ran longer than its {action.decl.timeout}-minute limit, so it may "
+                "have done only part of its work. Check the output below for how far it got, "
+                "then run it again; if it keeps timing out, the server it works on may be slow "
+                "or down."
+            )
         except ActionError as exc:
             status = "failed"
             ctx.problem(str(exc))
         except Exception as exc:
             status = "failed"
             log.exception("tool %s run %s failed", action.key, run_id)
-            ctx.problem(f"The run stopped: {type(exc).__name__}: {exc}")
+            ctx.problem(
+                "The run stopped on an unexpected error, so it may have done only part of its "
+                "work. Check the output below for how far it got, then run it again; if it "
+                f"happens again, report it with this run's link. ({type(exc).__name__}: {exc})"
+            )
         finally:
             saver.cancel()
             with contextlib.suppress(asyncio.CancelledError):
@@ -601,7 +632,7 @@ class ActionRunner:
             if ctx.counts
             else {
                 "succeeded": "Done",
-                "problems": f"Done with {len(ctx.problems)} problem(s)",
+                "problems": f"Done with {len(problems.split(ctx.problems)[0])} problem(s)",
                 "failed": "Failed",
                 "cancelled": "Cancelled",
             }.get(status, status)
@@ -665,7 +696,9 @@ class ActionRunner:
         asker's role must allow running it."""
         action = self._actions.get(key)
         if action is None:
-            raise ActionError(f"no tool {key!r}")
+            raise ActionError(
+                f"There's no tool {key!r} (it may have been removed): pick one from the Tools page."
+            )
         who = auth.current()
         if who is None or not who.holds(action.decl.permission):
             raise auth.PermissionDenied(f"you may not run or request {action.decl.title}")
@@ -730,7 +763,9 @@ class ActionRunner:
         req = await self.get_request(request_id)
         action = self._actions.get(req.action) if req else None
         if req is None or action is None:
-            raise ActionError("no such request")
+            raise ActionError(
+                "That run request doesn't exist any more: see the requests on the Tools page."
+            )
         who = _require_human_with(action.decl.permission)
         if req.status != "pending":
             raise ActionError("That request has already been decided.")

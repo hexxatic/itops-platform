@@ -59,6 +59,7 @@ def mount_access(app: FastAPI, templates: Jinja2Templates, runtime: Runtime) -> 
             "core/access.html",
             {
                 "page_title": f"Access: {info['name']}",
+                "current_module": "admin",
                 "area_name": info["name"],
                 "area_kind": runtime.areas.kinds[module][kind],
                 "back": info["url"],

@@ -1,9 +1,11 @@
 """People, roles and personal access tokens (Entra sign-in mode).
 
-**Roles** come from on-prem AD groups synced to Entra (design §7): Reader < Editor <
+**Roles** come from on-prem AD groups synced to Entra (design §7): Staff < Reader < Editor <
 Publisher < Admin, each including the ones before it. A role grants module permissions
 by their **last word**, so every module fits without wiring:
 
+    staff     -> only the permissions declared for everyone (ADR 0027), which every
+                 role holds
     reader    -> *.read
     editor    -> *.read, *.write
     publisher -> *.read, *.write, *.publish
@@ -40,9 +42,10 @@ from itops.core.audit import AuditLog
 from itops.core.auth import ALL, Principal
 from itops.core.directory import DirectoryCheck
 
-Role = Literal["reader", "editor", "publisher", "admin"]
-ROLES: tuple[Role, ...] = ("reader", "editor", "publisher", "admin")
+Role = Literal["staff", "reader", "editor", "publisher", "admin"]
+ROLES: tuple[Role, ...] = ("staff", "reader", "editor", "publisher", "admin")
 ROLE_VERBS: dict[Role, frozenset[str]] = {
+    "staff": frozenset(),  # the everyone permissions only
     "reader": frozenset({"read"}),
     "editor": frozenset({"read", "write"}),
     "publisher": frozenset({"read", "write", "publish"}),
@@ -52,10 +55,19 @@ TOKEN_PREFIX = "itops_"
 MAX_TOKEN_DAYS = 90
 
 
+EVERYONE = "*"  # a role group that means anyone who can sign in (staff, ADR 0027)
+
+
 def roles_from_groups(groups: Iterable[str], role_groups: dict[str, str]) -> list[Role]:
     """Group names from the token (``App-ITOps-Editors`` or ``DOMAIN\\App-...``) -> roles."""
     have = {g.split("\\")[-1].lower() for g in groups}
-    return [r for r in ROLES if role_groups.get(r, "").lower() in have]
+    named = {r: role_groups.get(r, "").lower() for r in ROLES}
+    return [r for r in ROLES if named[r] == EVERYONE or (named[r] and named[r] in have)]
+
+
+def real_groups(role_groups: dict[str, str]) -> list[str]:
+    """The role groups that are AD groups (not empty, not "*")."""
+    return [g for g in role_groups.values() if g and g != EVERYONE]
 
 
 def group_names(groups: Iterable[str]) -> tuple[str, ...]:
@@ -81,23 +93,29 @@ def permissions_for(
     *,
     groups: Iterable[str] = (),
     group_grants: dict[str, frozenset[str]] | None = None,
+    everyone: Iterable[str] = (),
 ) -> frozenset[str]:
     """Expand roles into concrete permissions from every loaded module's manifest.
 
     ``group_grants``: the group-granted permissions (manifest ``grant = "group"``) ->
     lower-case group names that hold them. Roles never grant those; holding one of the
-    groups does, for anyone with a role. Admins hold everything."""
+    groups does, for anyone with a role. ``everyone``: the permissions every role holds
+    (``grant = "everyone"``), the only ones staff hold. Admins hold everything."""
     top = top_role(roles)
     if top is None:
         return frozenset()
     if top == "admin":
         return frozenset({ALL})
     grants = group_grants or {}
+    for_all = frozenset(everyone) & frozenset(declared)
     verbs = ROLE_VERBS[top]
-    by_role = {p for p in declared if p not in grants and p.rsplit(".", 1)[-1] in verbs}
+    by_role = {
+        p for p in declared
+        if p not in grants and p not in for_all and p.rsplit(".", 1)[-1] in verbs
+    }  # fmt: skip
     have = set(group_names(groups))
     by_group = {p for p, holders in grants.items() if p in declared and holders & have}
-    return frozenset(by_role | by_group)
+    return frozenset(by_role | by_group | for_all)
 
 
 def _hash(token: str) -> str:
@@ -141,6 +159,7 @@ class Identity:
         self._sessionmaker = sessionmaker
         self._audit = audit or AuditLog()
         self._declared: frozenset[str] = frozenset()
+        self._everyone: frozenset[str] = frozenset()  # grant = "everyone" (ADR 0027)
         # Group-granted permission -> lower-case groups holding it (ADR 0014).
         self._group_grants: dict[str, frozenset[str]] = {}
         self.permission_groups: dict[str, list[str]] = {}  # as configured (ITOPS_PERMISSION_GROUPS)
@@ -154,12 +173,16 @@ class Identity:
         self._groups: dict[str, tuple[float, tuple[str, ...]]] = {}  # user id -> (when, groups)
 
     def set_declared_permissions(
-        self, permissions: Iterable[str], group_granted: Iterable[str] = ()
+        self,
+        permissions: Iterable[str],
+        group_granted: Iterable[str] = (),
+        everyone: Iterable[str] = (),
     ) -> list[str]:
-        """The loaded modules' permissions, and which of them groups grant. Returns
-        problems worth logging (a group-granted permission no group holds, or a mapping
-        for a permission no module declares)."""
+        """The loaded modules' permissions, which of them groups grant, and which everyone
+        holds. Returns problems worth logging (a group-granted permission no group holds,
+        or a mapping for a permission no module declares)."""
         self._declared = frozenset(permissions)
+        self._everyone = frozenset(everyone)
         granted = frozenset(group_granted)
         configured = {p: frozenset(group_names(g)) for p, g in self.permission_groups.items()}
         self._group_grants = {p: configured.get(p, frozenset()) for p in granted}
@@ -176,8 +199,16 @@ class Identity:
     def permissions_of(self, roles: Iterable[str], groups: Iterable[str]) -> frozenset[str]:
         """What these roles and groups grant across the loaded modules."""
         return permissions_for(
-            roles, self._declared, groups=groups, group_grants=self._group_grants
+            roles,
+            self._declared,
+            groups=groups,
+            group_grants=self._group_grants,
+            everyone=self._everyone,
         )
+
+    def only_everyone(self, permissions: frozenset[str]) -> bool:
+        """Whether these are nothing but the everyone permissions (staff, ADR 0027)."""
+        return ALL not in permissions and permissions <= self._everyone
 
     def principal(self, user: User, *, via_ai: bool = False, client: str = "web") -> Principal:
         return Principal(
@@ -212,7 +243,7 @@ class Identity:
         restricted area's."""
         extra = await self.watched_groups() if self.watched_groups else []
         granting = [g for groups in self.permission_groups.values() for g in groups]
-        names = {g.lower(): g for g in [*self.role_groups.values(), *granting, *extra]}
+        names = {g.lower(): g for g in [*real_groups(self.role_groups), *granting, *extra]}
         return list(names.values())
 
     async def record_sign_in(self, user: User) -> str:

@@ -32,7 +32,7 @@ import json
 import logging
 import re
 import time
-from collections.abc import Iterable, Sequence
+from collections.abc import Callable, Iterable, Sequence
 from dataclasses import dataclass
 from typing import Any, Literal
 
@@ -162,6 +162,9 @@ class SearchIndex:
         self._vocabulary_at = 0.0
         self._vocabulary_lock = asyncio.Lock()
         self.areas: Areas | None = None  # set by the app: restricted areas (ADR 0012)
+        # Set by the app (ADR 0027): which modules a search across modules covers on the
+        # current site, as (only these, modules) or (all but these, modules).
+        self.scope: Callable[[], tuple[bool, list[str]]] | None = None
 
     async def vocabulary(self, s: AsyncSession) -> Vocabulary:
         """Every term in the index (archived content included: the vocabulary only
@@ -328,6 +331,15 @@ class SearchIndex:
             return []
         params: dict[str, Any] = {"m": module, "n": max(1, min(limit, 50)) * 5}
         filters = "(:m IS NULL OR p.module = :m)"
+        if module is None and self.scope is not None:
+            only, mods = self.scope()
+            if only and not mods:
+                return []
+            if mods:
+                names = [f"s{i}" for i in range(len(mods))]
+                params.update(dict(zip(names, mods, strict=True)))
+                filters += f" AND p.module {'IN' if only else 'NOT IN'} ("
+                filters += ", ".join(":" + n for n in names) + ")"
         if auth.ALL not in principal.permissions:
             held = sorted(principal.permissions)
             if not held:

@@ -18,7 +18,7 @@ from sqlalchemy import text
 
 from itops.core import auth
 from itops.core.app import create_app
-from itops.core.config import Settings
+from itops.core.config import Settings, SiteConfig
 from itops.core.entra import EntraAuth, _safe_next  # pyright: ignore[reportPrivateUsage]
 from itops.core.identity import permissions_for, roles_from_groups
 
@@ -102,6 +102,21 @@ def test_roles_grant_permissions_by_last_word() -> None:
     assert permissions_for([], declared) == frozenset()
 
 
+def test_staff_hold_only_the_everyone_permissions() -> None:
+    """ADR 0027: "*" makes anyone who signs in staff; every role also holds what's for everyone."""
+    groups = {"staff": "*", "reader": "App-ITOps-Readers"}
+    assert roles_from_groups(["Domain Users"], groups) == ["staff"]
+    assert roles_from_groups(["App-ITOps-Readers"], groups) == ["staff", "reader"]
+    assert roles_from_groups(["Domain Users"], {"staff": "", "reader": "R"}) == []
+    declared = ["docs.read", "docs.howto", "kb.read", "kb.feedback.manage"]
+    everyone = ["docs.howto", "kb.read"]  # kb.read ends in .read but is for everyone
+    assert permissions_for(["staff"], declared, everyone=everyone) == set(everyone)
+    assert permissions_for(["reader"], declared, everyone=everyone) == {
+        "docs.read", "docs.howto", "kb.read"
+    }  # fmt: skip
+    assert permissions_for(["staff"], declared) == frozenset()
+
+
 def test_group_granted_permissions_come_from_groups_not_roles() -> None:
     declared = ["docs.read", "contracts.read", "contracts.approve"]
     grants = {
@@ -150,6 +165,8 @@ async def test_anonymous_requests_are_refused(database_url: str) -> None:
         assert (await client.post("/api/docs/documents", json={})).status_code == 401
         assert (await client.post("/mcp/", headers=MCP_HEADERS, json={})).status_code == 401
         assert (await client.get("/health")).status_code == 200
+        # Browsers fetch the app manifest without the sign-in cookie (core/webapp.py).
+        assert (await client.get("/manifest.webmanifest")).status_code == 200
 
 
 async def test_other_host_names_redirect_to_the_public_address(database_url: str) -> None:
@@ -204,6 +221,47 @@ async def test_sign_in_without_a_role_group_is_refused(
         assert (await client.get("/docs/")).status_code == 303
 
 
+async def test_staff_sign_in_on_the_help_site(
+    database_url: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """ADR 0027: sign-in on a site returns to that site, and anyone in the tenant is staff,
+    holding only what's declared for everyone (here Docs' how-tos)."""
+    fake = FakeMsal(["Domain Users"])
+    asked: list[str] = []
+
+    def flow(scopes: list[str], redirect_uri: str) -> dict[str, Any]:
+        asked.append(redirect_uri)
+        return {"auth_uri": "https://login.example/authorize?state=s1", "state": "s1"}
+
+    fake.initiate_auth_code_flow = flow  # type: ignore[method-assign]
+    monkeypatch.setattr(EntraAuth, "_app", lambda self: fake)  # pyright: ignore[reportUnknownLambdaType]
+    settings = Settings(
+        _env_file=None,  # pyright: ignore[reportCallIssue]
+        database_url_override=database_url, auth_mode="entra", entra_tenant_id="tenant",
+        entra_client_id="client", entra_client_secret=SecretStr("secret"),
+        directory_check=False,
+        role_groups={"staff": "*", "reader": "App-ITOps-Readers", "admin": "App-ITOps-Admins"},
+        sites={"help": SiteConfig(url="http://help.localhost:8800", title="IT Help")},
+    )  # fmt: skip
+    app = create_app(settings, modules=[docs])
+    async with app.router.lifespan_context(app):
+        transport = httpx.ASGITransport(app=app)
+        async with httpx.AsyncClient(
+            transport=transport, base_url="http://help.localhost:8800"
+        ) as client:
+            r = await sign_in(client, "/account")
+            assert asked == ["http://help.localhost:8800/auth/callback"]
+            assert r.status_code == 303 and r.headers["location"] == "/account"
+            account = (await client.get("/account")).text
+            assert "staff" in account and "IT Help" in account
+            # The help host serves no IT-Ops page; IT-Ops' host refuses staff its pages.
+            assert (await client.get("/docs/")).status_code == 404
+        async with httpx.AsyncClient(transport=transport, base_url=BASE) as client:
+            await sign_in(client)
+            assert asked[-1] == f"{BASE}/auth/callback"
+            assert (await client.get("/docs/")).status_code == 403
+
+
 async def test_callback_rejects_a_forged_state(
     database_url: str, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -213,6 +271,49 @@ async def test_callback_rejects_a_forged_state(
         r = await client.get("/auth/callback?code=abc&state=forged")
         assert r.status_code == 403
         assert (await client.get("/docs/")).status_code == 303
+
+
+# ---- requests from other sites -------------------------------------------------------
+
+EVIL = "https://evil.example.com"
+
+
+async def test_changes_from_another_site_are_refused(
+    database_url: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """SameSite=lax treats every host of the company's domain as one site: a page on another
+    of them mustn't make a signed-in browser change things (core/sameorigin.py)."""
+    entra_says(monkeypatch, ["App-ITOps-Publishers"])
+    async with running(database_url) as client:
+        r = await sign_in(client)  # the Entra callback still signs in (a GET, not a change)
+        assert r.status_code == 303
+        form = {"name": "Forged", "days": "1"}
+        for headers in ({"Origin": EVIL, "Sec-Fetch-Site": "same-site"},
+                        {"Origin": EVIL, "Sec-Fetch-Site": "cross-site"},
+                        {"Origin": EVIL},  # a browser without Sec-Fetch-Site
+                        {"Origin": "null"}):  # fmt: skip
+            forged = await client.post("/account/tokens", data=form, headers=headers)
+            assert forged.status_code == 403 and "another site" in forged.text
+        assert "Forged" not in (await client.get("/account")).text
+
+        # IT-Ops' own pages: forms, HTMX.
+        own = {"Origin": BASE, "Sec-Fetch-Site": "same-origin"}
+        r = await client.post("/account/tokens", data={"name": "Mine", "days": "1"}, headers=own)
+        token = re.search(r"itops_[A-Za-z0-9_-]{40,}", r.text)
+        assert r.status_code == 200 and token
+        # Behind the reverse proxy: the browser's origin is the forwarded name.
+        proxied = {"Origin": BASE, "x-forwarded-host": "localhost:8800",
+                   "Cookie": f"itops_session={client.cookies['itops_session']}"}  # fmt: skip
+        r = await client.post("http://127.0.0.1:8810/account/appearance",
+                              data={"appearance": "auto"}, headers=proxied)  # fmt: skip
+        assert r.status_code == 303
+
+        # A token isn't sent by browsers on their own: its requests aren't affected.
+        async with httpx.AsyncClient(transport=client._transport, base_url=BASE) as tool:  # pyright: ignore[reportPrivateUsage]
+            bearer = {"Authorization": f"Bearer {token.group(0)}", "Origin": EVIL,
+                      "Sec-Fetch-Site": "cross-site"}  # fmt: skip
+            r = await tool.post("/api/docs/documents/anything/publish", headers=bearer)
+            assert r.status_code == 403 and "human-only" in r.text  # refused for its own reason
 
 
 # ---- personal access tokens ------------------------------------------------------------

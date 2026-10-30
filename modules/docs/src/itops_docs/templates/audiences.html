@@ -1,0 +1,18 @@
+{% extends "core/shell.html" %}
+{% import "core/components.html" as ui %}
+{% block content %}
+{{ ui.breadcrumb([("Docs", "/docs/"), ("Collections", "/docs/collections"), ("Help-site audiences", None)]) }}
+{{ ui.page_header("Help-site audiences", "Who a document on the help site is for. Give an audience its AD groups (open it, then Change access): only people in one of them see its documents there. Documents for everyone need no audience.") }}
+{% if error %}{{ ui.alert(error, "danger") }}{% endif %}
+{% call ui.card() %}
+  {{ ui.table([("name", "Audience"), ("description", "About"), ("documents", "Documents"), ("access", "Who sees its documents")],
+              rows, empty="No audiences yet: every document on the help site is for everyone.") }}
+{% endcall %}
+{% call ui.card("New audience") %}
+<form method="post" action="/api/docs/audiences" class="stack">
+  {{ ui.field("name", "Name", value=name, required=True, help="Who it's for, e.g. “Plant 2” or “Engineering”.") }}
+  {{ ui.field("description", "Description", value=description, help="Optional: one line on who's in it.") }}
+  <div class="row">{{ ui.button("Create audience", type="submit", variant="primary") }}</div>
+</form>
+{% endcall %}
+{% endblock %}

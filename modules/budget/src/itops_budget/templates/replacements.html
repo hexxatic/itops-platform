@@ -1,0 +1,11 @@
+{% extends "core/shell.html" %}
+{% import "core/components.html" as ui %}
+{% block content %}
+{{ ui.breadcrumb([("Budget", "/budget/"), (replacing_title, None)]) }}
+{{ ui.page_header(replacing_title, "Every computer the budget replaces, by name, with why. Skip one that can wait a year.") }}
+{% if error %}{{ ui.alert(error, "danger") }}{% endif %}
+{% call ui.card() %}
+{% set download = "/api/budget/must-replace" %}
+{% include "budget/replacements_list.html" %}
+{% endcall %}
+{% endblock %}

@@ -1,0 +1,8 @@
+{% extends "core/shell.html" %}
+{% import "core/components.html" as ui %}
+{% block content %}
+{{ ui.page_header("Admin", "Everything admins look after, in one place.") }}
+{% call ui.card() %}
+  {{ ui.table([("page", "Page"), ("description", "What it's for")], rows) }}
+{% endcall %}
+{% endblock %}

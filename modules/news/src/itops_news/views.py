@@ -166,6 +166,7 @@ async def post_page(request: Request) -> dict[str, Any]:
         "activity": activity,
         "can_edit": (post.status == "draft" and _can("news.write")) or can_publish,
         "can_publish": can_publish,
+        "stamp": service.stamp(post),
         "error": request.query_params.get("error"),
     }
 
@@ -247,12 +248,14 @@ async def save_post(
     return _back(f"/news/p/{slug}")
 
 
-async def _lifecycle(slug: str, who: Principal, action: str) -> RedirectResponse:
+async def _lifecycle(
+    slug: str, who: Principal, action: str, reviewed: str | None = None
+) -> RedirectResponse:
     try:
         async with module.session() as s:
             post = await _post_or_404(s, slug)
             if action == "publish":
-                await service.publish(s, who, post)
+                await service.publish(s, who, post, reviewed=reviewed)
             elif action in ("pin", "unpin"):
                 await service.set_pinned(s, who, post, action == "pin")
             elif action == "archive":
@@ -260,7 +263,7 @@ async def _lifecycle(slug: str, who: Principal, action: str) -> RedirectResponse
             elif action == "restore":
                 await service.restore(s, who, post)
             elif action == "delete":
-                await service.delete_draft(s, who, post)
+                await service.delete_draft(s, who, post, reviewed=reviewed)
                 await s.commit()
                 return _back("/news/")
             await s.commit()
@@ -269,9 +272,11 @@ async def _lifecycle(slug: str, who: Principal, action: str) -> RedirectResponse
     return _back(f"/news/p/{slug}")
 
 
+# Publish and delete (a draft) send back the stamp the page showed (``?reviewed=``), so a
+# draft changed after the page loaded (by an AI connection, say) is refused, not acted on.
 @module.router.post("/posts/{slug}/publish")
-async def publish_post(slug: str, who: CanPublish) -> RedirectResponse:
-    return await _lifecycle(slug, who, "publish")
+async def publish_post(slug: str, who: CanPublish, reviewed: str) -> RedirectResponse:
+    return await _lifecycle(slug, who, "publish", reviewed)
 
 
 @module.router.post("/posts/{slug}/pin")
@@ -295,5 +300,5 @@ async def restore_post(slug: str, who: CanPublish) -> RedirectResponse:
 
 
 @module.router.post("/posts/{slug}/delete")
-async def delete_post(slug: str, who: CanPublish) -> RedirectResponse:
-    return await _lifecycle(slug, who, "delete")
+async def delete_post(slug: str, who: CanPublish, reviewed: str) -> RedirectResponse:
+    return await _lifecycle(slug, who, "delete", reviewed)

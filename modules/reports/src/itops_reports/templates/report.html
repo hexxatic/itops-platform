@@ -11,8 +11,10 @@
 {% call ui.alert("", "info") %}
 <strong>You're looking at a draft</strong>{% if draft_by %} by {{ draft_by }}{% endif %}. Readers see {% if d.config %}the published version{% else %}nothing until it's published{% endif %}.
 <div class="actions">
-  {{ ui.action_button("Publish", "/api/reports/r/" ~ d.key ~ "/publish", "primary") }}
-  {{ ui.action_button("Discard draft", "/api/reports/r/" ~ d.key ~ "/discard", "ghost", confirm="Discard this draft?") }}
+  {#- The stamp of the draft on screen: a change saved after the page loaded is refused. -#}
+  {% set reviewed = "?reviewed=" ~ stamp|urlencode %}
+  {{ ui.action_button("Publish", "/api/reports/r/" ~ d.key ~ "/publish" ~ reviewed, "primary") }}
+  {{ ui.action_button("Discard draft", "/api/reports/r/" ~ d.key ~ "/discard" ~ reviewed, "ghost", confirm="Discard this draft?") }}
   {% if d.config %}{{ ui.button("Show the published version", href="/reports/r/" ~ d.key) }}{% endif %}
 </div>
 {% endcall %}

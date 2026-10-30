@@ -1,9 +1,8 @@
 {% extends "core/shell.html" %}
 {% import "core/components.html" as ui %}
 {% block content %}
+{% if key %}{{ ui.breadcrumb([(module_title, base|replace("/types", "/")), ("Types", base), (definition.name, base ~ "/" ~ key), ("Edit", None)]) }}{% else %}{{ ui.breadcrumb([(module_title, base|replace("/types", "/")), ("Types", base), ("New type", None)]) }}{% endif %}
 {% call ui.page_header(page_title, "Saving makes a draft. Nothing changes for records until an admin publishes it.") %}
-  {% if key %}{{ ui.button("Back to " ~ definition.name, href=base ~ "/" ~ key) }}{% endif %}
-  {{ ui.button("All " ~ module_title ~ " types", href=base) }}
 {% endcall %}
 {% if error %}{{ ui.alert(error, "danger") }}{% endif %}
 <form method="post" action="{{ action }}" class="stack">

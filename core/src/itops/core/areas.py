@@ -7,7 +7,8 @@ or both. Restricting only narrows: roles still say what someone may do, an area'
 say where.
 
 Who can't see a restricted area: everyone acting *via AI* when it's kept out of AI (admins
-included); otherwise anyone who isn't an admin and is in none of its groups. Connector
+included), and apps (ADR 0021); otherwise anyone who isn't an admin and is in none of its
+groups (apps have none). Connector
 runs act as themselves, not as people, and see everything; so does code running with no
 principal at all (startup indexing).
 
@@ -89,7 +90,8 @@ class Restriction:
     def hides_from(self, p: auth.Principal | None) -> bool:
         if p is None or p.client == "connector":
             return False
-        if self.no_ai and p.via_ai:
+        # An app (ADR 0021) may hand what it reads to its own assistant: not into no-AI areas.
+        if self.no_ai and (p.via_ai or p.client == "app"):
             return True
         if not self.groups or auth.ALL in p.permissions:
             return False

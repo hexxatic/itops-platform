@@ -1,4 +1,4 @@
-"""``/audit``: the whole audit trail, newest first, for admins (ADR 0006)."""
+"""``/audit``: the whole audit trail, newest first, for admins in a browser (ADR 0006)."""
 
 from __future__ import annotations
 
@@ -25,9 +25,14 @@ def mount_audit(app: FastAPI, templates: Jinja2Templates, runtime: Runtime) -> N
         before: int | None = None,
     ) -> Response:
         try:
-            auth.require(AUDIT_PERMISSION)
+            principal = auth.require(AUDIT_PERMISSION)
         except auth.PermissionDenied as exc:
             raise HTTPException(status_code=403, detail="The audit trail is for admins.") from exc
+        # Admins, in a browser. Entries carry titles and summaries from areas kept out of AI
+        # (ADR 0012) and don't say which area they belong to, so a token (an AI tool) gets
+        # none of them, like /ai-connections and /access.
+        if principal.via_ai:
+            raise HTTPException(status_code=403, detail="Open this page in a browser.")
         maker = runtime.sessionmaker
         assert maker is not None
         async with maker() as s:
@@ -51,6 +56,7 @@ def mount_audit(app: FastAPI, templates: Jinja2Templates, runtime: Runtime) -> N
             "core/audit.html",
             {
                 "page_title": "Audit trail",
+                "current_module": "admin",
                 "entries": entries,
                 "modules": [("", "All modules")] + [(m, m) for m in modules],
                 "module": module,

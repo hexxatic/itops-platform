@@ -1,6 +1,7 @@
 {% extends "core/shell.html" %}
 {% import "core/components.html" as ui %}
 {% block content %}
+{{ ui.breadcrumb([("Admin", "/admin"), ("AI connections", None)]) }}
 {{ ui.page_header("AI connections", "Every AI tool that can act as someone here, via AI. Cut any of them off; the audit trail records it.") }}
 
 {% if oauth_on %}

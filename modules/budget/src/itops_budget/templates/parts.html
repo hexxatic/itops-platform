@@ -1,0 +1,146 @@
+{#- The forecast itself, shared by today's page and a saved version's page (context from
+    views.forecast_context; `download` is the must-replace download, or none). -#}
+{{ ui.stat_tiles(tiles) }}
+
+{% if gaps %}
+{% call ui.alert("", "warning") %}
+<strong>What would firm this up</strong>
+<ul>{% for g in gaps %}<li>{{ g.text }}{% if g.link %} <a href="{{ g.link.href }}">{{ g.link.text }}</a>{% endif %}</li>{% endfor %}</ul>
+{% endcall %}
+{% endif %}
+
+{% call ui.card(year_title) %}
+{{ ui.table(line_columns, lines) }}
+{% if left_out %}<p class="muted">{{ left_out|length }} computer{{ " isn't" if left_out|length == 1 else "s aren't" }} in this budget: see <a href="#left-out">Not in this budget</a>.</p>{% endif %}
+{% if quarters %}
+<p class="muted">By quarter, spread evenly (replacements don't keep a calendar):</p>
+{{ ui.stat_tiles(quarters) }}
+{% endif %}
+{% endcall %}
+
+{% if plan %}
+{% call ui.card("Five-year plan: " ~ plan.name) %}
+<div class="stack" id="plan">
+<p class="muted">{{ plan.about }} Year 1 is the budget above. Every plan pays for computers that must go and those that fail; they differ in what they replace early, oldest first.</p>
+{{ ui.chart("stacked", plan.chart.labels, plan.chart.series, plan.chart.title, money=True) }}
+{{ ui.table(plan.columns, plan.rows) }}
+<p class="muted">Reused: computers left by people who leave, given to someone whose computer is due. Prices rise each year after the first.</p>
+<h3>Every plan side by side</h3>
+{{ ui.table(plan.compare_columns, plan.compare) }}
+{% if plan_form is defined and can_write %}
+{% call ui.disclosure("Change the plan") %}
+<form method="post" action="/api/budget/plan" class="stack">
+  <div class="grid">
+    {{ ui.select("plan", "Plan", plan_form.plans, selected=plan_form.plan) }}
+    {{ ui.field("must_replace_age", "Must replace at (years old)", plan_form.must_replace_age, type="number") }}
+    {{ ui.field("steady_years", "Replacement cycle (years)", plan_form.steady_years, type="number", help="Replacement cycle and Lease plans.") }}
+    {{ ui.field("plan_amount", "Yearly amount ($)", plan_form.plan_amount, help="Yearly amount plan.") }}
+    {{ ui.field("reuse_pct", "Leavers' computers reused (%)", plan_form.reuse_pct, type="number") }}
+    {{ ui.field("price_rise_pct", "Prices rise a year (%)", plan_form.price_rise_pct, type="number") }}
+    {{ ui.field("lease_markup_pct", "A lease costs more by (%)", plan_form.lease_markup_pct, type="number", help="Until a lease is quoted: over the purchase price, across the term.") }}
+  </div>
+  <div class="actions">{{ ui.button("Use this plan", type="submit", variant="primary") }}</div>
+</form>
+{% endcall %}
+{% endif %}
+</div>
+{% endcall %}
+
+<div class="grid-2">
+{% call ui.card("Scenarios") %}
+<p class="muted">Low and high change how many computers fail and how fast hiring grows.</p>
+{{ ui.stat_tiles(scenarios) }}
+{% endcall %}
+{% call ui.card("Hiring history") %}
+{% if growth.rows %}
+<p class="muted">People who get a computer of their own (the seat rule), by year. Net new seats a year: low {{ net_seats.low|number }}, expected {{ net_seats.expected|number }}, high {{ net_seats.high|number }}.</p>
+{{ ui.chart("bar", growth.labels, growth.series, "Hired and left, with a seat", unit="people") }}
+{% if predicted_seats is not none %}<p class="muted">The seat rule gives {{ predicted_seats|number }} people a computer of their own today; Assets counts {{ computers_in_use|number }} computers in use. The rest are shared and production computers, which hiring doesn't change.</p>{% endif %}
+{% else %}
+{{ ui.empty_state("No hiring history", "Growth assumes no new seats until an HR dataset is available.") }}
+{% endif %}
+{% endcall %}
+</div>
+
+<div class="grid-2">
+{% call ui.card("The fleet by age") %}
+<p class="muted">{{ computers_in_use|number }} computers in use{% if spares %}, plus {{ spares|number }} spare{% endif %}. Age comes from the purchase date, or else the warranty end.</p>
+{{ ui.chart("stacked", ages.labels, ages.series, "Computers in use by age", unit="computers") }}
+{% endcall %}
+{% call ui.card("Past spend") %}
+{% if actuals.labels %}
+{{ ui.chart("stacked", actuals.labels, actuals.series, "Spend by year, from purchase history", money=True) }}
+{% if replacements_last_year is not none %}<p class="muted">{{ replacements_last_year }} computer{{ "" if replacements_last_year == 1 else "s" }} bought as replacements in the last 12 months.</p>{% endif %}
+{% else %}
+{{ ui.empty_state("No purchase history yet", "Add purchases to the purchase-history dataset in Reports: past spend shows here, and actual spend against the adopted version.") }}
+{% endif %}
+{% endcall %}
+</div>
+{% else %}
+<div class="grid-2">
+{% call ui.card("Scenarios") %}
+<p class="muted">Low and high change how many computers fail and how fast hiring grows.</p>
+{{ ui.stat_tiles(scenarios) }}
+{% endcall %}
+{% call ui.card("What a steady policy would cost") %}
+<p class="muted">Replacing as needed, next to replacing every computer at a fixed age for the same amount every year. A steady amount avoids surprise spikes.</p>
+{{ ui.stat_tiles(steady_tiles) }}
+{{ ui.chart("bar", turning.labels, turning.series, turning.title, unit="computers") }}
+{% if unknown_age %}<p class="muted">{{ unknown_age }} computer{{ "" if unknown_age == 1 else "s" }} with an unknown age {{ "isn't" if unknown_age == 1 else "aren't" }} in this chart.</p>{% endif %}
+{% endcall %}
+</div>
+
+<div class="grid-2">
+{% call ui.card("The fleet by age") %}
+<p class="muted">{{ computers_in_use|number }} computers in use{% if spares %}, plus {{ spares|number }} spare{% endif %}. Age comes from the purchase date, or else the warranty end.</p>
+{{ ui.chart("stacked", ages.labels, ages.series, "Computers in use by age", unit="computers") }}
+{% endcall %}
+{% call ui.card("Hiring history") %}
+{% if growth.rows %}
+<p class="muted">People who get a computer of their own (the seat rule), by year. Net new seats a year: low {{ net_seats.low|number }}, expected {{ net_seats.expected|number }}, high {{ net_seats.high|number }}.</p>
+{{ ui.chart("bar", growth.labels, growth.series, "Hired and left, with a seat", unit="people") }}
+{% if predicted_seats is not none %}<p class="muted">The seat rule gives {{ predicted_seats|number }} people a computer of their own today; Assets counts {{ computers_in_use|number }} computers in use. The rest are shared and production computers, which hiring doesn't change.</p>{% endif %}
+{% else %}
+{{ ui.empty_state("No hiring history", "Growth assumes no new seats until an HR dataset is available.") }}
+{% endif %}
+{% endcall %}
+</div>
+
+{% call ui.card("Past spend") %}
+{% if actuals.labels %}
+{{ ui.chart("stacked", actuals.labels, actuals.series, "Spend by year, from purchase history", money=True) }}
+{% if replacements_last_year is not none %}<p class="muted">{{ replacements_last_year }} computer{{ "" if replacements_last_year == 1 else "s" }} bought as replacements in the last 12 months.</p>{% endif %}
+{% else %}
+{{ ui.empty_state("No purchase history yet", "Add purchases to the purchase-history dataset in Reports: past spend shows here, and actual spend against the adopted version.") }}
+{% endif %}
+{% endcall %}
+{% endif %}
+
+{% call ui.card("Not in this budget") %}
+<div class="stack" id="left-out">
+<p class="muted">Computers in use that this budget doesn't pay for: their own equipment (by model, on the assumptions page), or left out by a person with a reason. They aren't counted anywhere else on this page.</p>
+{{ ui.table(left_out_columns, left_out, empty="Every computer in use is in this budget.") }}
+{% if exclude is defined and can_write %}
+<form method="post" action="/api/budget/exclusions" class="stack">
+  <h3>Leave a computer out</h3>
+  <div class="grid">
+    {{ ui.field("name", "Computer", exclude.name, required=True, help="Its name as Assets shows it, e.g. HOST01.") }}
+    {{ ui.field("reason", "Why", exclude.reason, required=True, help="e.g. Controls the press; replaced with the machine.") }}
+  </div>
+  <div class="actions">{{ ui.button("Leave out", type="submit") }}</div>
+</form>
+{% endif %}
+</div>
+{% endcall %}
+
+{% call ui.card(replacing_title) %}
+{% if replacements_href is defined %}
+<div class="stack" id="replacements">
+<p class="muted">The computers this budget replaces, by name, with why{% if fails %}; about {{ fails }} more are replaced as they fail{% endif %}. Skip one to next year there.</p>
+{{ ui.stat_tiles(replacing_tiles) }}
+<div class="actions">{{ ui.button("Open the replacement list", href=replacements_href, variant="primary") }}</div>
+</div>
+{% else %}
+{% include "budget/replacements_list.html" %}
+{% endif %}
+{% endcall %}

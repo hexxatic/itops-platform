@@ -1,10 +1,11 @@
 name = "news"
 version = "0.1.1"
 title = "News"
+nav_order = 60
 description = "Updates to the app and announcements from the IT department, newest first."
 requires = ["core>=0.1"]
 optional = []
-provides = []
+provides = ["waiting"]
 
 [permissions]
 "news.read" = "Read published news"

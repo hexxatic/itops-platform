@@ -1,23 +1,31 @@
 name = "docs"
-version = "0.9.1"
+version = "0.13.0"
 title = "Docs"
+nav_order = 10
 description = "IT documentation: section-based documents with drafts, publishing and version history."
 requires = ["core>=0.1"]
 optional = ["assets", "contracts"]
-provides = ["lookup", "related", "link_targets", "ensure_collections", "source_status", "save_file", "upsert", "type_usage", "move_type", "typed_documents", "archive_type", "describe_area", "area_entities", "visible_entity"]
+provides = ["lookup", "related", "link_targets", "ensure_collections", "source_status", "save_file", "upsert", "type_usage", "move_type", "typed_documents", "archive_type", "describe_area", "area_entities", "visible_entity", "waiting", "howto_collections", "howtos", "howto", "howto_index", "shared_file_permission"]
 
 [permissions]
 "docs.read" = "Read published documentation"
+# Everyone who can sign in (ADR 0027): the files of documents shown on the help site (the
+# help site's How-tos read the documents through the howto services; audiences narrow both).
+"docs.howto" = { description = "Read how-tos shown on the help site", grant = "everyone" }
 "docs.write" = "Create documents and save drafts"
-"docs.publish" = { description = "Publish, discard and archive documents", human_only = true }
+"docs.publish" = { description = "Publish, discard and archive documents, and show them on the help site", human_only = true }
 "docs.types.draft" = "Draft document types and changes to them (admins; AI may draft)"
 "docs.types.approve" = { description = "Publish, retire and restore document types (admins)", human_only = true }
-"docs.collections.manage" = { description = "Create, rename, reorder and delete collections (admins)", human_only = true }
+"docs.collections.manage" = { description = "Create, rename, reorder and delete collections and help-site audiences (admins)", human_only = true }
 
 # Admins can restrict a collection to AD groups or keep it out of AI connections (ADR 0012).
+# An audience restricted to groups shows its help-site documents only to them (ADR 0028).
 [areas]
 collection = "Collection"
+audience = "Help-site audience"
 
 [events]
 document_published = "A document version was published (payload: id, slug, title, version)"
 document_archived = "A document was archived (payload: id, slug)"
+collection_changed = "A collection was renamed or deleted (payload: id, slug)"
+help_site_changed = "A document was shown on or taken off the help site, or its audience changed (payload: id, slug)"

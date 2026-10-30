@@ -6,6 +6,24 @@
   {% if can_publish %}{{ ui.button("New dataset", href="/reports/datasets/new", variant="primary") }}{% endif %}
 {% endcall %}
 {% if error %}{{ ui.alert(error, "danger") }}{% endif %}
+{% for p in proposals %}
+{% call ui.card("Proposed by AI: " ~ p.title) %}
+<div class="stack"{% if loop.first %} id="proposals"{% endif %}>
+  <p class="muted">Proposed by {{ p.by }} · {{ p.when }}. Nothing is created until an admin approves it.</p>
+  <p>{{ p.note }}</p>
+  {{ ui.table([("field", "Setting"), ("value", "Proposed")], p.rows) }}
+  {% if p.waiting_rows %}<p>{{ p.waiting_rows }} proposed row{{ "" if p.waiting_rows == 1 else "s" }} wait for it: once it's created they show on its page for their own approval.</p>{% endif %}
+  {% if can_publish %}
+  <div class="actions">
+    {{ ui.action_button("Create dataset", "/api/reports/dataset-proposals/" ~ p.id ~ "/approve", variant="primary") }}
+    {{ ui.action_button("Reject", "/api/reports/dataset-proposals/" ~ p.id ~ "/reject", variant="danger") }}
+  </div>
+  {% else %}
+  <p class="muted">An admin creates or rejects it.</p>
+  {% endif %}
+</div>
+{% endcall %}
+{% endfor %}
 {% call ui.card() %}
 {{ ui.table([("title", "Dataset"), ("mode", "Where rows come from"), ("rows", "Rows"), ("kept", "Kept")], datasets,
             empty="No datasets yet.") }}

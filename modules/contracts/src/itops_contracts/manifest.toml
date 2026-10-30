@@ -1,10 +1,11 @@
 name = "contracts"
-version = "0.3.0"
+version = "0.4.0"
 title = "Contracts"
-description = "IT contracts: each term's dates, cost and seats, renewals that come due on time, and approval before renewing or cancelling."
+nav_order = 30
+description = "IT contracts: each term's dates, cost, usage rates and seats, renewals that come due on time, and approval before renewing or cancelling."
 requires = ["core>=0.1"]
 optional = ["docs", "assets"]
-provides = ["lookup", "related", "link_targets", "upsert"]
+provides = ["lookup", "related", "link_targets", "upsert", "waiting"]
 
 # Granted by AD group, not by role (ADR 0014): contracts are for a few people. The
 # deployment maps each to groups in ITOPS_PERMISSION_GROUPS; admins hold them all.
@@ -12,7 +13,7 @@ provides = ["lookup", "related", "link_targets", "upsert"]
 "contracts.read" = { description = "View contracts and their renewals", grant = "group" }
 "contracts.write" = { description = "Create and change contracts and terms (people edit directly; every change is audited)", grant = "group" }
 "contracts.approve" = { description = "Decide to renew or cancel a contract, accept AI-drafted contracts, archive contracts", human_only = true, grant = "group" }
-"contracts.costs" = { description = "See and change what contracts cost (never shown to AI connections)", grant = "group" }
+"contracts.costs" = { description = "See and change what contracts cost, and apply costs AI proposed (never shown to AI connections)", grant = "group" }
 
 [events]
 renewal_due = "A term's renewal reminder came due, 120/90/60/30 days before its cancel-by date (payload: id, name, owner, cancel_by, days_left, reminder)"
@@ -22,6 +23,6 @@ cancelled = "A contract was cancelled (payload: id, name, ends_on)"
 
 [jobs.renewals]
 title = "Contract renewals"
-description = "Marks terms whose notice window opened, sends the 120/90/60/30-day reminders, repeats overdue ones weekly, and marks ended terms nobody renewed as lapsed."
+description = "Marks terms whose notice window opened, records the 120/90/60/30-day reminders (shown on Contracts and, within 30 days, on approvers' Waiting for you; emailed once notify exists), repeats overdue ones weekly, and marks ended terms nobody renewed as lapsed."
 schedule = "daily 06:00"
 permissions = ["contracts.read", "contracts.write"]

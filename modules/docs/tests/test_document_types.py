@@ -72,7 +72,7 @@ async def test_typed_document_draft_publish(database_url: str, tmp_path: Path) -
         assert "Vendor" in page and "Gold" in page and "2027-03-01" in page
 
         # ...but publishing needs them.
-        r = await c.post(f"/api/docs/documents/{slug}/publish")
+        r = await c.post(f"/api/docs/documents/{slug}/publish?version=1")
         assert "Before%20publishing" in r.headers["location"]
         assert "Account%20number%20is%20required" in r.headers["location"]
 
@@ -82,7 +82,7 @@ async def test_typed_document_draft_publish(database_url: str, tmp_path: Path) -
                   "f__renews": "2027-03-01", "f__portal_login": "op://IT/acme/password"},
         )  # fmt: skip
         assert r.status_code == 303
-        assert (await c.post(f"/api/docs/documents/{slug}/publish")).status_code == 303
+        assert (await c.post(f"/api/docs/documents/{slug}/publish?version=2")).status_code == 303
         page = (await c.get(f"/docs/d/{slug}")).text
         assert "ACME-42" in page and "op://IT/acme/password" in page
 

@@ -12,6 +12,8 @@ so only security groups count and odd characters in names don't matter. Values r
 through environment variables and are escaped for LDAP: nothing is pasted into the script.
 If AD can't be reached the answer is "error" and the caller keeps what it knew (a DC outage
 mustn't lock everyone out).
+
+Why this isn't a connector or a JEA endpoint: ADR 0013 ("Leavers lose access").
 """
 
 from __future__ import annotations

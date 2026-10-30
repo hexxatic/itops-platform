@@ -48,7 +48,7 @@ def cmd_serve(args: argparse.Namespace) -> int:
         # Ctrl+C / a service stop waits on it forever. Give open requests 5 s, then close.
         timeout_graceful_shutdown=5,
         # Keep the real peer address: behind IIS it's loopback, which is how the sign-in gate
-        # knows X-Forwarded-Host came from the local proxy (entra._public_host). uvicorn's
+        # knows X-Forwarded-Host came from the local proxy (entra.public_host). uvicorn's
         # own handling would swap in the browser's address first and hide that.
         proxy_headers=False,
     )
@@ -214,7 +214,8 @@ def cmd_search(args: argparse.Namespace) -> int:
     from itops.core.app import create_app
 
     async def run() -> int:
-        app = create_app()
+        # Beside the running service: no schedulers or recovery here, only the reindexers.
+        app = create_app(background=False)
         async with app.router.lifespan_context(app):
             for mod in app.state.load_result.loaded:
                 for reindex in mod.search.reindexers:

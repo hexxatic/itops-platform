@@ -1,0 +1,56 @@
+{% extends "core/shell.html" %}
+{% import "core/components.html" as ui %}
+{% block content %}
+{{ ui.breadcrumb([("Budget", "/budget/"), (v.title, "/budget/v/" ~ v.id), ("Summary", None)]) }}
+{% call ui.page_header("Device budget: " ~ v.title, ("Adopted " ~ adopted ~ " by " ~ v.adopted_by ~ "." if v.status == "adopted" else "Draft for review.") ~ " Prices before tax.") %}
+  {{ ui.button("Print or save as PDF", attrs={"x-data": "", "@click": "window.print()"}) }}
+  {{ ui.export_links(download) }}
+{% endcall %}
+
+{{ ui.stat_tiles(headline) }}
+
+{% call ui.card() %}
+{{ ui.table([("what", "What"), ("amount", "Amount"), ("why", "Why")], rows) }}
+{% endcall %}
+
+{% if outlook %}
+{% call ui.card("Five-year outlook: the " ~ plan_name ~ " plan") %}
+{{ ui.stat_tiles(outlook) }}
+<p>Five years: {{ five_years }}. <strong>If we spend less:</strong> {{ spend_less }}</p>
+{% endcall %}
+{% endif %}
+
+<div class="grid-2">
+{% call ui.card("What this buys") %}<p>{{ buys }}</p>{% endcall %}
+{% call ui.card("What we're deferring") %}<p>{{ defers }}</p>{% endcall %}
+</div>
+
+{% if quarters %}
+{% call ui.card("When the money is spent") %}
+<p class="muted">The computers that must be replaced are bought first; the rest is spread evenly.</p>
+{{ ui.stat_tiles(quarters) }}
+{% if range %}<p class="muted">{{ range }}</p>{% endif %}
+{% endcall %}
+{% endif %}
+
+{% if replacing %}
+{% call ui.card("Replacement list") %}
+<p class="muted">The computers this budget replaces, by name. Others are replaced as they fail.</p>
+{{ ui.table([("name", "Computer"), ("list", "List"), ("model", "Model"), ("why", "Why")], replacing) }}
+{% endcall %}
+{% endif %}
+
+{% if skipped %}
+{% call ui.card("Skipped to next year") %}
+{{ ui.table([("name", "Computer"), ("due", "Why it was due"), ("why", "Why it can wait")], skipped) }}
+{% endcall %}
+{% endif %}
+
+{% if left_out %}
+{% call ui.card("Not in this budget") %}
+{{ ui.table([("name", "Computer"), ("why", "Why")], left_out) }}
+{% endcall %}
+{% endif %}
+
+<p><a href="/budget/v/{{ v.id }}">Where these figures come from</a></p>
+{% endblock %}

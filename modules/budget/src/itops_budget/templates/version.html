@@ -1,0 +1,32 @@
+{% extends "core/shell.html" %}
+{% import "core/components.html" as ui %}
+{% block content %}
+{{ ui.breadcrumb([("Budget", "/budget/"), (v.title, None)]) }}
+{% call ui.page_header(v.title, "Saved " ~ created ~ " by " ~ v.created_by ~ ". The figures are as they were then.") %}
+  {{ ui.badge(status[0], status[1]) }}
+  {{ ui.button("Summary", href="/budget/v/" ~ v.id ~ "/summary", variant="primary") }}
+  {% if can_approve and v.status != "adopted" %}{{ ui.action_button("Adopt", "/api/budget/versions/" ~ v.id ~ "/adopt", "secondary", confirm="Adopt this version? Actual spend is tracked against the adopted one.") }}{% endif %}
+  {% if can_write and v.status != "adopted" %}{{ ui.action_button("Delete", "/api/budget/versions/" ~ v.id ~ "/delete", "danger", confirm="Delete this saved version? Its figures can't be brought back.") }}{% endif %}
+{% endcall %}
+{% if error %}{{ ui.alert(error, "danger") }}{% endif %}
+{% if v.status == "adopted" %}{{ ui.alert("Adopted " ~ adopted ~ " by " ~ v.adopted_by ~ ". Actual spend is tracked against it, so it can't be deleted; adopt another version first.", "success") }}{% endif %}
+
+{% if tracking %}
+{% call ui.card("Actual spend since it was saved") %}
+{{ ui.stat_tiles(tracking.tiles) }}
+{% endcall %}
+{% endif %}
+
+{% set download = None %}
+{% include "budget/parts.html" %}
+
+<div class="grid-2">
+{% call ui.card("Assumptions it used") %}
+{{ ui.table([("what", "Assumption"), ("value", "Value")], assumption_rows) }}
+{% endcall %}
+{% call ui.card("Prices it used") %}
+{{ ui.table([("item", "Item"), ("category", "For"), ("price", "Price"), ("source", "Source")], price_rows, empty="No prices.") }}
+{% endcall %}
+</div>
+
+{% endblock %}

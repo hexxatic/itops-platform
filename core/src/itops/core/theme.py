@@ -8,6 +8,8 @@ A theme is an installed package registered under the ``itops.themes`` entry poin
     logo_dark = "logo-rev.png" # optional: the logo for dark mode (e.g. a reversed wordmark)
     logo_alt = "Acme logo"
     subtitle = "Acme IT"       # under the product name
+    icons = ["icon-192.png", "icon-512.png"]  # optional: square PNGs for the installed app
+    color = "#123456"          # optional: the installed app's title bar
 
 Core serves the theme's own files at ``/theme/<file>`` and the shell links them. With no theme
 installed, IT-Ops shows its neutral defaults. ``ITOPS_THEME`` picks one by name when several
@@ -26,7 +28,7 @@ import tomllib
 from contextvars import ContextVar
 from dataclasses import dataclass
 from importlib import metadata, resources
-from typing import Any, Literal
+from typing import Any, Literal, cast
 
 from starlette.types import ASGIApp, Receive, Scope, Send
 
@@ -44,11 +46,13 @@ class Theme:
     logo_dark: str | None = None
     logo_alt: str = ""
     subtitle: str = ""
+    icons: tuple[str, ...] = ()
+    color: str = ""
 
     def files(self) -> dict[str, str]:
         """Published file name -> media type (only these are served)."""
         out = {"theme.css": "text/css"}
-        for logo in (self.logo, self.logo_dark):
+        for logo in (self.logo, self.logo_dark, *self.icons):
             if logo:
                 ext = "." + logo.rsplit(".", 1)[-1].lower()
                 out[logo] = _MEDIA.get(ext, "application/octet-stream")
@@ -94,6 +98,8 @@ def discover(setting: str = "") -> Theme | None:
         logo_dark=str(config["logo_dark"]) if config.get("logo_dark") else None,
         logo_alt=str(config.get("logo_alt") or ""),
         subtitle=str(config.get("subtitle") or ""),
+        icons=tuple(str(i) for i in cast(list[object], config.get("icons") or [])),
+        color=str(config.get("color") or ""),
     )
     if not resources.files(package).joinpath("theme.css").is_file():
         log.error("theme %r has no theme.css; ignoring it", ep.name)

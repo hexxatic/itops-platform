@@ -6,7 +6,8 @@ Browser pages and AI tools both call these functions, so the rules live here onc
   readers see.
 * **Publishing** (human-only: ``docs.publish``) stamps the latest version, repoints
   ``current_version_id`` and sets the next review date. Discarding and archiving are
-  human-only too.
+  human-only too. Publish and discard name the version the person reviewed and are
+  refused if a newer draft was saved since (an AI connection may save one any time).
 * Content is normalized (sanitized) on every save.
 * **Attachments** (PDFs, Office files, Visio, ...) belong to a version like its fields:
   adding or removing one makes a draft. Stored as [{id, filename, size, mime}]; the bytes
@@ -20,6 +21,9 @@ Browser pages and AI tools both call these functions, so the rules live here onc
 viewer can't see is left out of every read here (lists, counts, lookups, links, search)
 and can't be written to: pages answer 404, tools say it doesn't exist.
 
+**The help site** (ADR 0027, 0028): a publisher shows a document there, for everyone or one
+**audience** (an area admins restrict to groups); see the how-tos section below.
+
 Callers pass a session and commit.
 """
 
@@ -32,14 +36,22 @@ import uuid
 from dataclasses import dataclass
 from typing import Any
 
-from sqlalchemy import delete, func, select
+from sqlalchemy import Select, delete, func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from itops.sdk import Principal
-from itops.sdk.content import Content, Passage, normalize, passages
+from itops.sdk.content import Content, Passage, normalize, passages, plain_text
 from itops.sdk.types import TypeDef, TypeProblem, TypeView, credential_ref
 from itops_docs.app import module
-from itops_docs.models import Collection, Document, DocumentField, DocumentTag, Version, utcnow
+from itops_docs.models import (
+    Audience,
+    Collection,
+    Document,
+    DocumentField,
+    DocumentTag,
+    Version,
+    utcnow,
+)
 
 _SLUG_RE = re.compile(r"[^a-z0-9]+")
 _FILE_RE = re.compile(r"/files/([0-9a-fA-F-]{36})")
@@ -287,6 +299,47 @@ async def documents(
     return list((await s.execute(q)).scalars().unique())
 
 
+async def waiting(
+    s: AsyncSession, *, collection_id: int | None = None, limit: int = 200
+) -> list[tuple[Document, Version]]:
+    """Documents waiting to be published, last saved first: new drafts and published
+    documents whose newest version is an unpublished edit. Each comes with that version
+    (who saved it, when, its change note)."""
+    q = await _waiting(select(Document, Version), collection_id)
+    q = q.order_by(Version.created_at.desc()).limit(limit)
+    return [(d, v) for d, v in (await s.execute(q)).unique().all()]
+
+
+async def count_waiting(s: AsyncSession) -> int:
+    """How many documents are waiting to be published (all of them, not a page)."""
+    return await _count(s, await _waiting(select(Document.id)))
+
+
+async def _waiting(q: Select[Any], collection_id: int | None = None) -> Select[Any]:
+    newest = (
+        select(Version.document_id, func.max(Version.version_number).label("n"))
+        .group_by(Version.document_id)
+        .subquery()
+    )
+    q = (
+        q.join(newest, newest.c.document_id == Document.id)
+        .join(
+            Version,
+            (Version.document_id == Document.id) & (Version.version_number == newest.c.n),
+        )
+        .where(Version.published_at.is_(None), Document.status != "archived")
+    )
+    if hidden := await hidden_collections():
+        q = q.where(Document.collection_id.not_in(hidden))
+    if collection_id is not None:
+        q = q.where(Document.collection_id == collection_id)
+    return q
+
+
+async def _count(s: AsyncSession, q: Select[Any]) -> int:
+    return int((await s.execute(select(func.count()).select_from(q.subquery()))).scalar_one())
+
+
 async def slugs_by_id(s: AsyncSession, ids: list[str]) -> dict[str, str]:
     """Document id (as indexed in search) -> current slug."""
     wanted = [uuid.UUID(i) for i in ids]
@@ -340,6 +393,325 @@ async def view(s: AsyncSession, doc: Document) -> DocView:
         published = await s.get(Version, doc.current_version_id)
     draft = latest if latest and latest.published_at is None else None
     return DocView(doc=doc, published=published, draft=draft)
+
+
+# ---- how-tos for staff (ADR 0027, 0028) ----------------------------------------------
+# A publisher shows a document on the help site, for everyone or for one audience; the help
+# site's How-tos (modules/kb) read them through the services below, as the person looking.
+# An audience is an area (ADR 0012): restricted to AD groups, its how-tos are left out for
+# anyone in none of them, the way a restricted collection's documents are. Audiences only
+# narrow the help site: IT's Docs pages and search ignore them. Drafts, archived documents and
+# documents in a restricted collection are never offered, whoever is asking.
+
+EXCERPT_CHARS = 240
+
+
+@dataclass
+class EndUserDoc:
+    doc: Document
+    version: Version  # the published one
+    tags: list[str]
+    audience: str | None  # its name; None for everyone
+
+    @property
+    def content(self) -> Content:
+        return Content.model_validate_json(self.version.content)
+
+
+async def hidden_audiences() -> frozenset[int]:
+    """Audiences the current viewer isn't in (ADR 0028); admins are in every one."""
+    return frozenset(int(k) for k in await module.areas.hidden("audience"))
+
+
+async def _offered_collections(s: AsyncSession, *, anyone: bool = False) -> list[Collection]:
+    """Collections the viewer can see (``anyone``: every one) that aren't restricted to
+    groups, in their order: a restricted collection is for its groups only, so nothing in it
+    goes to everyone."""
+    if anyone:
+        q = select(Collection).order_by(Collection.sort_order, Collection.name)
+        listed = list((await s.execute(q)).scalars())
+    else:
+        listed = [c for c, _ in await collections(s)]
+    return [
+        c for c in listed if not (await module.areas.access("collection", str(c.id)))["restricted"]
+    ]
+
+
+async def _with_versions(s: AsyncSession, docs: list[Document]) -> list[EndUserDoc]:
+    if not docs:
+        return []
+    ids = [d.id for d in docs]
+    versions = {
+        v.id: v
+        for v in (
+            await s.execute(
+                select(Version).where(Version.id.in_([d.current_version_id for d in docs]))
+            )
+        ).scalars()
+    }
+    tag_rows = await s.execute(
+        select(DocumentTag.document_id, DocumentTag.tag)
+        .where(DocumentTag.document_id.in_(ids))
+        .order_by(DocumentTag.tag)
+    )
+    by_doc: dict[uuid.UUID, list[str]] = {}
+    for doc_id, tag in tag_rows.all():
+        by_doc.setdefault(doc_id, []).append(tag)
+    names = {a.id: a.name for a in await audiences(s)}
+    return [
+        EndUserDoc(
+            doc=d,
+            version=v,
+            tags=by_doc.get(d.id, []),
+            audience=names.get(d.audience_id) if d.audience_id is not None else None,
+        )
+        for d in docs
+        if d.current_version_id is not None and (v := versions.get(d.current_version_id))
+    ]
+
+
+async def help_documents(
+    s: AsyncSession,
+    *,
+    collection: str | None = None,
+    slug: str | None = None,
+    every_audience: bool = False,
+) -> list[EndUserDoc]:
+    """Published documents shown on the help site that the viewer may see (``every_audience``:
+    all of them, whoever is asking), by title; ``collection`` (a slug) or ``slug`` narrows
+    them."""
+    cols = {c.id: c for c in await _offered_collections(s, anyone=every_audience)}
+    if collection is not None:
+        cols = {i: c for i, c in cols.items() if c.slug == collection}
+    if not cols:
+        return []
+    q = select(Document).where(
+        Document.help_site == True,  # noqa: E712 (SQL Server has no IS TRUE)
+        Document.status == "published",
+        Document.current_version_id.is_not(None),
+        Document.collection_id.in_(cols),
+    )
+    if not every_audience and (hidden := await hidden_audiences()):
+        q = q.where(or_(Document.audience_id.is_(None), Document.audience_id.not_in(hidden)))
+    if slug is not None:
+        q = q.where(Document.slug == slug)
+    docs = list((await s.execute(q.order_by(Document.title))).scalars().unique())
+    return await _with_versions(s, docs)
+
+
+async def help_collections(s: AsyncSession) -> list[Collection]:
+    """The collections holding at least one how-to the viewer may see, in their order."""
+    used = {e.doc.collection_id for e in await help_documents(s)}
+    return [c for c in await _offered_collections(s) if c.id in used]
+
+
+def excerpt(content: Content) -> str:
+    """The first paragraph that isn't a heading, cut at a word near EXCERPT_CHARS."""
+    for para in plain_text(content).split("\n\n"):
+        if para.startswith("#"):
+            continue
+        if len(para) <= EXCERPT_CHARS:
+            return para
+        return para[:EXCERPT_CHARS].rsplit(" ", 1)[0] + "…"
+    return ""
+
+
+def _howto(e: EndUserDoc) -> dict[str, Any]:
+    return {
+        "slug": e.doc.slug,
+        "title": e.doc.title,
+        "collection": {"slug": e.doc.collection.slug, "name": e.doc.collection.name},
+        "audience": e.audience,
+        # For the help site's search entries (ADR 0028): they're hidden like the audience.
+        "area": module.areas.id("audience", str(e.doc.audience_id))
+        if e.doc.audience_id is not None
+        else None,
+        "excerpt": excerpt(e.content),
+        "tags": e.tags,
+        "published_at": e.version.published_at,
+        "version": e.version.version_number,
+    }
+
+
+@module.service("howto_collections")
+async def howto_collections() -> list[dict[str, Any]]:
+    """For the help site (ADR 0027): the collections holding how-tos the viewer may see, in
+    their order: ``[{slug, name, description}]``."""
+    async with module.session() as s:
+        return [
+            {"slug": c.slug, "name": c.name, "description": c.description}
+            for c in await help_collections(s)
+        ]
+
+
+@module.service("howtos")
+async def howtos(collection: str | None = None) -> list[dict[str, Any]]:
+    """For the help site: every how-to the viewer may see (published, shown on the help site,
+    for everyone or an audience they're in), by title: ``[{slug, title, collection: {slug,
+    name}, audience, area, excerpt, tags, published_at, version}]``; ``audience`` is None
+    for everyone."""
+    async with module.session() as s:
+        return [_howto(e) for e in await help_documents(s, collection=collection)]
+
+
+@module.service("howto_index")
+async def howto_index() -> list[dict[str, Any]]:
+    """For the help site's search (kb), not for showing anyone: every how-to whatever its
+    audience and whoever asks, as ``howtos`` gives them plus ``content``. Index each with its
+    ``area`` (its audience's) so search hides it from people outside the audience."""
+    async with module.session() as s:
+        return [
+            {**_howto(e), "content": e.content}
+            for e in await help_documents(s, every_audience=True)
+        ]
+
+
+@module.service("howto")
+async def howto(slug: str) -> dict[str, Any] | None:
+    """For the help site: one how-to, the summary plus ``content`` (:class:`Content`) and
+    ``attachments`` ``[{id, filename, size, mime}]``; None if it isn't one the viewer may
+    see. Its images and attachments open to them too (``shared_file_permission``)."""
+    async with module.session() as s:
+        found = await help_documents(s, slug=slug)
+        if not found:
+            return None
+        e = found[0]
+        return {
+            **_howto(e),
+            "content": e.content,
+            "attachments": [
+                {
+                    "id": a["id"],
+                    "filename": a["filename"],
+                    "size": a.get("size"),
+                    "mime": a.get("mime"),
+                }
+                for a in version_attachments(e.version)
+            ],
+        }
+
+
+@module.service("shared_file_permission")
+async def shared_file_permission(entity_type: str, entity_id: str) -> str | None:
+    """A document's files open to everyone (``docs.howto``) while it's on the help site:
+    published, in a collection that isn't restricted (ADR 0027). Its audience is checked by
+    ``visible_entity``, like a collection."""
+    ids = _parse_ids([entity_id]) if entity_type == "document" else []
+    if not ids:
+        return None
+    async with module.session() as s:
+        doc = await s.get(Document, ids[0])
+        if doc is None or doc.status != "published" or not doc.help_site:
+            return None
+        offered = {c.id for c in await _offered_collections(s)}
+    return "docs.howto" if doc.collection_id in offered else None
+
+
+async def set_help_site(
+    s: AsyncSession, who: Principal, doc: Document, *, shown: bool, audience_id: int | None
+) -> None:
+    """Show the document on the help site (once it's published), for everyone or one
+    audience, or take it off. A person does this: it puts the document in front of staff."""
+    _require_human(who)
+    if not shown:
+        audience_id = None
+    audience = await s.get(Audience, audience_id) if audience_id is not None else None
+    if audience_id is not None and audience is None:
+        raise DocsError("That audience doesn't exist any more. Choose another.")
+    if (doc.help_site, doc.audience_id) == (shown, audience_id):
+        return
+    doc.help_site, doc.audience_id = shown, audience_id
+    for_whom = f"for {audience.name}" if audience else "for everyone"
+    summary = f"Shown on the help site {for_whom}" if shown else "Taken off the help site"
+    await _audit(
+        s, doc, "help_site", summary, shown=shown, audience=audience.name if audience else None
+    )
+    module.publish("help_site_changed", {"id": str(doc.id), "slug": doc.slug})
+
+
+# ---- audiences (docs.collections.manage: admins, human-only) ---------------------------
+
+
+async def audiences(s: AsyncSession) -> list[Audience]:
+    """Every audience, in order (Docs' pages list them all, whoever is looking)."""
+    return list(
+        (await s.execute(select(Audience).order_by(Audience.sort_order, Audience.name))).scalars()
+    )
+
+
+async def audience_counts(s: AsyncSession) -> dict[int, int]:
+    """Audience id -> how many documents are for it (archived included)."""
+    rows = await s.execute(
+        select(Document.audience_id, func.count())
+        .where(Document.audience_id.is_not(None))
+        .group_by(Document.audience_id)
+    )
+    return {int(a): int(n) for a, n in rows.all()}
+
+
+async def _audience_audit(s: AsyncSession, a: Audience, verb: str, summary: str) -> None:
+    await module.audit.record(
+        s, f"audience.{verb}", kind="audience", entity_id=str(a.id), title=a.name, summary=summary
+    )
+
+
+def _audience_fields(name: str, description: str) -> tuple[str, str]:
+    name = " ".join(name.split())[:200]
+    if not name:
+        raise DocsError("Give the audience a name, e.g. “Plant 2” or “Engineering”.")
+    return name, " ".join(description.split())[:1000]
+
+
+async def _audience_clash(s: AsyncSession, name: str, exclude: int | None = None) -> None:
+    q = select(Audience.id).where(func.lower(Audience.name) == name.lower())
+    if exclude is not None:
+        q = q.where(Audience.id != exclude)
+    if (await s.execute(q)).first():
+        raise DocsError(f"There's already an audience called “{name}”.")
+
+
+async def create_audience(s: AsyncSession, *, name: str, description: str = "") -> Audience:
+    """A new audience, last in the order. It's open to everyone until an admin restricts it
+    to groups on its access page."""
+    name, description = _audience_fields(name, description)
+    await _audience_clash(s, name)
+    last = (await s.execute(select(func.max(Audience.sort_order)))).scalar() or 0
+    a = Audience(name=name, description=description, sort_order=last + 10)
+    s.add(a)
+    await s.flush()
+    await _audience_audit(s, a, "created", f"Created audience “{name}”")
+    return a
+
+
+async def update_audience(s: AsyncSession, a: Audience, *, name: str, description: str) -> None:
+    name, description = _audience_fields(name, description)
+    await _audience_clash(s, name, exclude=a.id)
+    if (a.name, a.description) == (name, description):
+        return
+    summary = (
+        f"Renamed audience “{a.name}” to “{name}”" if a.name != name else "Changed its description"
+    )
+    a.name, a.description = name, description
+    await _audience_audit(s, a, "updated", summary)
+
+
+async def delete_audience(s: AsyncSession, a: Audience) -> None:
+    """Delete an audience nothing is for. One that documents are for is refused: moving them
+    to everyone would show them to people it was chosen to keep them from."""
+    n = (await audience_counts(s)).get(a.id, 0)
+    if n:
+        raise DocsError(
+            f"{n} document(s) are for “{a.name}”. Choose another audience on each first "
+            "(Documents, below)."
+        )
+    await _audience_audit(s, a, "deleted", f"Deleted audience “{a.name}”")
+    await s.delete(a)
+
+
+async def audience_documents(s: AsyncSession, a: Audience) -> list[Document]:
+    """The documents for an audience, by title (archived included)."""
+    q = select(Document).where(Document.audience_id == a.id).order_by(Document.title)
+    return list((await s.execute(q)).scalars().unique())
 
 
 # ---- writes -------------------------------------------------------------------------
@@ -624,31 +996,55 @@ def _require_human(who: Principal) -> None:
         raise DocsError("Publishing, discarding and archiving are done by a person.")
 
 
-async def publish(s: AsyncSession, who: Principal, doc: Document) -> Version:
-    """Publish the newest version: it becomes what readers see."""
+def _check_reviewed(latest: Version, reviewed: int | None, done: str, verb: str) -> None:
+    """Refuse when the newest version isn't the one the person had on screen (``reviewed``):
+    an AI connection or a colleague may have saved another draft after the page loaded.
+    ``None`` is only for a connector acting on the version it just saved itself."""
+    if reviewed is None or latest.version_number == reviewed:
+        return
+    if latest.version_number > reviewed and latest.published_at is None:
+        raise DocsError(
+            f"Not {done}: v{latest.version_number} was saved by {latest.author_user}"
+            f"{' (via AI)' if latest.author_via_ai else ''} after you opened v{reviewed}. "
+            f"It's shown below: read it, then {verb} again."
+        )
+    raise DocsError(
+        f"Not {done}: v{reviewed}, the version you opened, isn't the newest draft any more "
+        "(it was published or discarded since). The page below shows where it stands now."
+    )
+
+
+async def publish(
+    s: AsyncSession, who: Principal, doc: Document, *, version: int | None
+) -> Version:
+    """Publish the newest version: it becomes what readers see.
+
+    ``version`` is the version number the person reviewed; publishing is refused if a newer
+    one was saved since, so nothing goes live unread."""
     _require_human(who)
-    version = await _latest(s, doc.id)
-    if version is None:
+    latest = await _latest(s, doc.id)
+    if latest is None:
         raise DocsError("Nothing to publish.")
+    _check_reviewed(latest, version, "published", "publish")
     if doc.type_key:
         definition = await type_definition(doc.type_key)
-        values = known_fields(definition, version_fields(version))
+        values = known_fields(definition, version_fields(latest))
         try:
             await _validated(doc.type_key, values, require=True)
         except DocsError as exc:
             raise DocsError(f"Before publishing: {exc}") from exc
     now = utcnow()
-    if version.published_at is None:
-        version.published_at = now
+    if latest.published_at is None:
+        latest.published_at = now
     doc.status = "published"
-    doc.current_version_id = version.id
+    doc.current_version_id = latest.id
     doc.updated_at = now
     doc.next_review_at = (now + dt.timedelta(days=doc.review_interval_days)).date()
     await s.flush()
     await _index(s, doc)
     await _audit(
-        s, doc, "published", f"Published version {version.version_number}",
-        version=version.version_number,
+        s, doc, "published", f"Published version {latest.version_number}",
+        version=latest.version_number,
     )  # fmt: skip
     module.publish(
         "document_published",
@@ -656,19 +1052,23 @@ async def publish(s: AsyncSession, who: Principal, doc: Document) -> Version:
             "id": str(doc.id),
             "slug": doc.slug,
             "title": doc.title,
-            "version": version.version_number,
+            "version": latest.version_number,
         },
     )
-    return version
+    return latest
 
 
-async def discard(s: AsyncSession, who: Principal, doc: Document) -> str:
+async def discard(s: AsyncSession, who: Principal, doc: Document, *, version: int | None) -> str:
     """Throw away the unpublished draft.
 
+    ``version`` is the draft the person reviewed; refused if a newer one was saved since.
     Returns ``"deleted"`` if the document was never published (it's removed entirely)
     or ``"reverted"`` (unpublished versions dropped, the published one stays).
     """
     _require_human(who)
+    latest = await _latest(s, doc.id)
+    if latest is not None:
+        _check_reviewed(latest, version, "discarded", "discard it")
     if doc.current_version_id is None:
         await _audit(s, doc, "deleted", "Discarded the draft (never published, so deleted)")
         await module.search.remove(s, kind="document", entity_id=str(doc.id))
@@ -720,7 +1120,11 @@ def _collection_fields(name: str, description: str) -> tuple[str, str]:
 
 
 async def create_collection(
-    s: AsyncSession, *, name: str, description: str = "", slug: str | None = None
+    s: AsyncSession,
+    *,
+    name: str,
+    description: str = "",
+    slug: str | None = None,
 ) -> Collection:
     """A new collection, last in the order. Its URL slug comes from the name (or ``slug``,
     for connectors that file into known collections) and stays fixed afterwards, so links
@@ -744,8 +1148,13 @@ async def create_collection(
 
 
 async def update_collection(
-    s: AsyncSession, col: Collection, *, name: str, description: str
+    s: AsyncSession,
+    col: Collection,
+    *,
+    name: str,
+    description: str,
 ) -> None:
+    """Rename and describe the collection (its slug stays)."""
     name, description = _collection_fields(name, description)
     clash = await s.execute(
         select(Collection.id).where(
@@ -762,6 +1171,7 @@ async def update_collection(
     col.name, col.description = name, description
     if changed:
         await _collection_audit(s, col, "updated", "Changed " + ", ".join(changed), **changed)
+        module.publish("collection_changed", {"id": col.id, "slug": col.slug})
 
 
 async def move_collection(s: AsyncSession, col: Collection, direction: int) -> None:
@@ -812,6 +1222,7 @@ async def delete_collection(s: AsyncSession, col: Collection, *, move_to: int | 
         s, col, "deleted", summary, moved=count, moved_to=target.name if target else None
     )
     await s.delete(col)
+    module.publish("collection_changed", {"id": col.id, "slug": col.slug})
     return count
 
 
@@ -902,17 +1313,21 @@ async def related(link: str, limit: int = 50) -> list[dict[str, str]]:
 
 @module.service("describe_area")
 async def describe_area(kind: str, key: str) -> dict[str, str] | None:
-    """A collection's name and its edit page, for the core access page (ADR 0012)."""
-    if kind != "collection" or not key.isdigit():
+    """A collection's or audience's name and its page, for the core access page (ADR 0012)."""
+    if kind not in ("collection", "audience") or not key.isdigit():
         return None
     async with module.session() as s:
+        if kind == "audience":
+            a = await s.get(Audience, int(key))
+            return {"name": a.name, "url": f"/docs/audiences/{a.id}"} if a else None
         col = await s.get(Collection, int(key))
     return {"name": col.name, "url": f"/docs/collections/{col.slug}/edit"} if col else None
 
 
 @module.service("area_entities")
 async def area_entities(kind: str, key: str) -> dict[str, Any]:
-    """The documents in a collection, as search entries (a new restriction marks them)."""
+    """The documents in a collection, as search entries (a new restriction marks them). An
+    audience has none: it narrows only the help site, whose search kb filters (ADR 0028)."""
     if kind != "collection" or not key.isdigit():
         return {"kind": "document", "ids": []}
     async with module.session() as s:
@@ -922,7 +1337,8 @@ async def area_entities(kind: str, key: str) -> dict[str, Any]:
 
 @module.service("visible_entity")
 async def visible_entity(entity_type: str, entity_id: str) -> bool:
-    """May the viewer see what a file belongs to (its document's collection)? /files asks."""
+    """May the viewer see what a file belongs to (its document's collection; for someone who
+    reads it on the help site, its audience too)? /files asks."""
     if entity_type != "document":
         return True
     wanted = _parse_ids([entity_id])
@@ -930,10 +1346,66 @@ async def visible_entity(entity_type: str, entity_id: str) -> bool:
         return False
     async with module.session() as s:
         doc = await s.get(Document, wanted[0])
-    return doc is not None and doc.collection_id not in await hidden_collections()
+    if doc is None or doc.collection_id in await hidden_collections():
+        return False
+    who = module.current_principal()
+    if who is None or who.has("docs.read") or doc.audience_id is None:
+        return True
+    return doc.audience_id not in await hidden_audiences()
 
 
 @module.service("link_targets")
 async def link_targets() -> list[dict[str, str]]:
     """What record-type link fields can point at in Docs (the type editor lists these)."""
     return [{"target": "docs", "label": "Docs: a document"}]
+
+
+async def reviews_due(s: AsyncSession, *, limit: int = 200) -> list[Document]:
+    """Published documents past their *Review by* date, longest overdue first."""
+    q = (await _reviews_due(select(Document))).order_by(Document.next_review_at).limit(limit)
+    return list((await s.execute(q)).scalars())
+
+
+async def count_reviews_due(s: AsyncSession) -> int:
+    """How many published documents are past their *Review by* date (all of them)."""
+    return await _count(s, await _reviews_due(select(Document.id)))
+
+
+async def _reviews_due(q: Select[Any]) -> Select[Any]:
+    q = q.where(Document.status == "published", Document.next_review_at.is_not(None),
+                Document.next_review_at <= dt.date.today())  # fmt: skip
+    if hidden := await hidden_collections():
+        q = q.where(Document.collection_id.not_in(hidden))
+    return q
+
+
+async def mark_reviewed(s: AsyncSession, who: Principal, doc: Document) -> None:
+    """A person checked a published document and it's still right: its next review is one
+    interval from today (audited). People only; AI can't sign a review off."""
+    if who.via_ai:
+        raise DocsError("A person signs a review off, in the web UI.")
+    doc.next_review_at = dt.date.today() + dt.timedelta(days=doc.review_interval_days)
+    await module.audit.record(
+        s, "document.reviewed", kind="document", entity_id=str(doc.id), title=doc.title,
+        summary=f"Reviewed {doc.title}: still right; next review {doc.next_review_at}",
+    )  # fmt: skip
+
+
+@module.service("waiting")
+async def waiting_for_you() -> list[dict[str, Any]]:
+    """What's waiting for the person looking (core's *Waiting for you*): drafts and edits to
+    publish, and published documents due for review."""
+    who = module.current_principal()
+    out: list[dict[str, Any]] = []
+    if who is None:
+        return out
+    async with module.session() as s:
+        if who.has("docs.publish"):
+            n = await count_waiting(s)
+            out.append({"title": f"{n} document{'s' if n != 1 else ''} to publish",
+                        "url": "/docs/#waiting", "count": n})  # fmt: skip
+        if who.has("docs.write"):
+            n = await count_reviews_due(s)
+            out.append({"title": f"{n} document{'s' if n != 1 else ''} due for review",
+                        "url": "/docs/#reviews", "count": n})  # fmt: skip
+    return out

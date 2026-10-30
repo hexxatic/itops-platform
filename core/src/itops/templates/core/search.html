@@ -1,7 +1,7 @@
 {% extends "core/shell.html" %}
 {% import "core/components.html" as ui %}
 {% block content %}
-{{ ui.page_header("Search", "Everything published in IT-Ops that you can read.") }}
-{{ ui.search_box("/search", query, "Search everything", archived=archived, live=True) }}
+{{ ui.page_header("Search", "Docs, assets, contracts, news and tools you can read. Reports and the budget are on their own pages.") }}
+{{ ui.search_box("/search", query, "Search IT-Ops", archived=archived, live=True) }}
 {{ ui.search_results(hits, query, show_module=True, modules=module_titles) }}
 {% endblock %}

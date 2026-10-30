@@ -15,6 +15,7 @@ from itops.core.config import Settings
 from itops.core.entra import EntraAuth, session_user
 from itops.core.identity import MAX_TOKEN_DAYS, Identity, User, top_role
 from itops.core.oauth import OAuthProvider
+from itops.core.sites import Sites
 from itops.core.theme import APPEARANCES, current_appearance, parse_appearance
 
 
@@ -25,9 +26,11 @@ def mount_account(
     identity: Identity,
     admin_links: list[dict[str, str]] | None = None,
     oauth: OAuthProvider | None = None,
+    sites: Sites | None = None,
 ) -> None:
     """``admin_links``: [{label, href, permission}], shown to people holding the permission.
-    ``oauth``: AI tools connected with OAuth (ADR 0013), listed and revocable here."""
+    ``oauth``: AI tools connected with OAuth (ADR 0013), listed and revocable here.
+    ``sites``: sign-in returns to the site it started on (ADR 0027)."""
     links = admin_links or []
 
     def message(request: Request, title: str, detail: str, status: int = 403) -> Response:
@@ -40,7 +43,7 @@ def mount_account(
 
     entra = settings.auth_mode == "entra"
     if entra:
-        flow = EntraAuth(settings, identity, message)
+        flow = EntraAuth(settings, identity, message, sites.base_url if sites else None)
         app.add_api_route("/auth/login", flow.login, methods=["GET"], include_in_schema=False)
         app.add_api_route("/auth/callback", flow.callback, methods=["GET"], include_in_schema=False)
         app.add_api_route("/auth/logout", flow.logout, methods=["GET"], include_in_schema=False)

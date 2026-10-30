@@ -1,8 +1,9 @@
 {% extends "core/shell.html" %}
 {% import "core/components.html" as ui %}
 {% block content %}
+{{ ui.breadcrumb([("Docs", "/docs/"), ("Collections", None)]) }}
 {% call ui.page_header("Manage collections", "Collections group documents on the Docs home page. Order them with the arrows.") %}
-  {{ ui.button("Back to Docs", href="/docs/") }}
+  {{ ui.button("Help-site audiences", href="/docs/audiences") }}
   {{ ui.button("New collection", href="/docs/collections/new", variant="primary") }}
 {% endcall %}
 {% if error %}{{ ui.alert(error, "danger") }}{% endif %}

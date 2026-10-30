@@ -1,0 +1,32 @@
+{% extends "core/shell.html" %}
+{% import "core/components.html" as ui %}
+{% block content %}
+{{ ui.breadcrumb([("Assets", "/assets/"), ("OS readiness", "/assets/readiness"), (target.name if target else "New", None)]) }}
+{% call ui.page_header(target.name if target else "New OS target", "An operating system devices are checked against, and what its hardware needs.") %}
+  {% if target %}
+    {{ ui.action_button("Remove", "/api/assets/readiness/targets/" ~ target.id ~ "/delete", variant="danger",
+                        confirm="Stop checking devices against " ~ target.name ~ "?") }}
+  {% endif %}
+{% endcall %}
+{% if error %}{{ ui.alert(error, "danger") }}{% endif %}
+{% call ui.card() %}
+<form method="post" action="/api/assets/readiness/targets{{ '/' ~ target.id if target }}" class="stack">
+  <div class="grid">
+    {{ ui.field("name", "Operating system", v.name, required=True, help="e.g. Windows 11") }}
+    {{ ui.field("upgrades_from", "Replaces", v.upgrades_from, required=True, help="Devices running these are checked. Separate with commas, e.g. Windows 10, Windows 11.") }}
+  </div>
+  <div class="grid">
+    {{ ui.field("min_memory_gb", "Minimum memory (GB)", v.min_memory_gb, type="number") }}
+    {{ ui.field("min_storage_gb", "Minimum storage (GB)", v.min_storage_gb, type="number") }}
+    {{ ui.field("min_tpm", "Minimum TPM", v.min_tpm, help="A version, e.g. 2.0. Blank: not checked.") }}
+  </div>
+  {{ ui.field("processors", "Supported processors", v.processors, type="textarea", help="One pattern per line (a regular expression, matched anywhere in the name, ignoring case and (R)/(TM) marks). # starts a comment. Blank: processors aren't checked.") }}
+  {{ ui.field("source", "Where the requirements come from", v.source, help="e.g. Microsoft's supported processor lists (2025-10)") }}
+  {{ ui.field("notes", "Notes", v.notes, type="textarea", help="Shown on the readiness page, e.g. what isn't checked.") }}
+  <div class="actions">{{ ui.button("Save", type="submit", variant="primary") }}{{ ui.button("Cancel", href="/assets/readiness") }}</div>
+</form>
+{% endcall %}
+{% if activity %}
+{% call ui.disclosure("Activity (" ~ activity|length ~ ")") %}{{ ui.activity(activity) }}{% endcall %}
+{% endif %}
+{% endblock %}

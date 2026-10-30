@@ -21,11 +21,15 @@ from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from itops.core import auth
-from itops.core.connectors import TICK_SECONDS, is_due, next_due, utcnow
+from itops.core.connectors import TICK_SECONDS, is_due, next_due, stop_tasks, utcnow
 from itops.core.manifest import JobDecl
 
 JobFn = Callable[[], Awaitable[str | None]]
 log = logging.getLogger("itops.jobs")
+STOPPED = (
+    "Stopped: IT-Ops shut down (a restart or an update) before it finished, so only part of "
+    "it was done. It runs again at its next scheduled time."
+)
 
 
 @dataclass(frozen=True)
@@ -131,6 +135,9 @@ class JobRunner:
         token = auth.set_current_token(job.principal)
         try:
             summary = await job.fn() or ""
+        except asyncio.CancelledError:  # the service is shutting down (JobRunner.stop)
+            status, summary = "stopped", STOPPED
+            raise
         except Exception as exc:
             status, summary = "failed", f"Stopped: {exc}"
             log.exception("job %s run %s failed", job.key, run_id)
@@ -145,6 +152,10 @@ class JobRunner:
                     {"st": status, "sm": summary[:500], "i": run_id},
                 )
                 await s.commit()
+
+    async def stop(self) -> None:
+        """At shutdown: stop the runs still going, so each is recorded as stopped."""
+        await stop_tasks(self._tasks.values())
 
     async def recover(self) -> int:
         """Runs left 'running' by a stopped service are marked failed."""

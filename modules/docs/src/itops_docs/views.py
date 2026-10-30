@@ -20,7 +20,7 @@ from itops.sdk.content import Content, render, toc
 from itops.sdk.types import TypeDef
 from itops_docs import service
 from itops_docs.app import module
-from itops_docs.models import Collection, Document, Version
+from itops_docs.models import Audience, Collection, Document, Version
 from itops_docs.service import (
     DocsError,
     known_fields,
@@ -46,13 +46,36 @@ def _when(value: dt.datetime | dt.date | None) -> str:
     return value.isoformat()
 
 
-def _doc_row(d: Document, type_names: dict[str, str] | None = None) -> dict[str, Any]:
+def _doc_row(
+    d: Document, type_names: dict[str, str] | None = None, *, pending: bool = False
+) -> dict[str, Any]:
+    status = {"badge": d.status.capitalize(), "tone": STATUS_TONE[d.status]}
+    if pending and d.status == "published":
+        status = {"badge": "Edit pending", "tone": "info"}
     return {
         "title": {"text": d.title, "href": f"/docs/d/{d.slug}"},
         "type": (type_names or {}).get(d.type_key or "", ""),
         "collection": {"text": d.collection.name, "href": f"/docs/c/{d.collection.slug}"},
-        "status": {"badge": d.status.capitalize(), "tone": STATUS_TONE[d.status]},
+        "status": status,
         "updated": _when(d.updated_at),
+    }
+
+
+def _author(v: Version) -> str:
+    return v.author_user + (" (via AI)" if v.author_via_ai else "")
+
+
+def _waiting_row(d: Document, v: Version, type_names: dict[str, str]) -> dict[str, Any]:
+    """A document waiting to be published: a new draft or an edit to a published one."""
+    new = d.status == "draft"
+    return {
+        "title": {"text": d.title, "href": f"/docs/d/{d.slug}?draft=1"},
+        "change": {"badge": "New", "tone": "warning"} if new else {"badge": "Edit", "tone": "info"},
+        "type": type_names.get(d.type_key or "", ""),
+        "collection": {"text": d.collection.name, "href": f"/docs/c/{d.collection.slug}"},
+        "note": v.change_note,
+        "by": _author(v),
+        "updated": _when(v.created_at),
     }
 
 
@@ -156,13 +179,21 @@ async def _form_fields(request: Request) -> dict[str, Any]:
 # ---- pages --------------------------------------------------------------------------
 
 
+WAITING_SHOWN = 30  # per list on the Docs home; the count says how many in all
+
+
 @module.page("/", template="index.html", title="Docs", nav="Docs", permission="docs.read")
 async def home(request: Request) -> dict[str, Any]:
     async with module.session() as s:
         cols = await service.collections(s)
-        drafts = await service.documents(s, status="draft", limit=20)
+        writer = _can("docs.write")
+        waiting = await service.waiting(s, limit=WAITING_SHOWN) if writer else []  # for writers
+        due = await service.reviews_due(s, limit=WAITING_SHOWN) if writer else []
+        waiting_count = await service.count_waiting(s) if waiting else 0
+        due_count = await service.count_reviews_due(s) if due else 0
         recent = await service.documents(s, status="published", limit=15)
     names = await _type_names()
+    pending = {d.id for d, _ in waiting}
     return {
         "collections": [
             {
@@ -172,8 +203,18 @@ async def home(request: Request) -> dict[str, Any]:
             }
             for c, n in cols
         ],
-        "drafts": [_doc_row(d, names) for d in drafts],
-        "recent": [_doc_row(d, names) for d in recent],
+        "waiting": [_waiting_row(d, v, names) for d, v in waiting[:WAITING_SHOWN]],
+        "waiting_count": waiting_count,
+        "can_publish": _can("docs.publish"),
+        "due": [
+            {
+                "title": {"text": doc.title, "href": f"/docs/d/{doc.slug}"},
+                "due": _when(doc.next_review_at),
+            }
+            for doc in due[:WAITING_SHOWN]
+        ],
+        "due_count": due_count,
+        "recent": [_doc_row(d, names, pending=d.id in pending) for d in recent],
         "can_write": _can("docs.write"),
         "can_manage_types": _can("docs.types.draft"),
         "can_manage_collections": _can("docs.collections.manage"),
@@ -200,13 +241,14 @@ async def collection(request: Request) -> dict[str, Any]:
             raise HTTPException(status_code=404, detail="Collection not found")
         show_archived = request.query_params.get("archived") == "1"
         docs = await service.documents(s, collection_id=col.id, include_archived=show_archived)
+        pending = {d.id for d, _ in await service.waiting(s, collection_id=col.id)}
     names = await _type_names()
     return {
         "page_title": col.name,
         "collection": col,
         "access": await module.areas.access("collection", str(col.id)),
         "show_archived": show_archived,
-        "rows": [_doc_row(d, names) for d in docs],
+        "rows": [_doc_row(d, names, pending=d.id in pending) for d in docs],
         "can_write": _can("docs.write"),
     }
 
@@ -219,6 +261,9 @@ async def document(request: Request) -> dict[str, Any]:
         v = await service.view(s, doc)
         doc_tags = await service.tags(s, doc.id)
         history = await service.versions(s, doc.id)
+        can_share = _can("docs.publish") and doc.status != "archived"
+        audience = await s.get(Audience, doc.audience_id) if doc.audience_id else None
+        audience_choices = await _audience_choices(s) if can_share else []
     activity = await module.audit.history(kind="document", entity_id=str(doc.id))
     showing_draft = v.published is None or (show_draft and v.has_pending_draft)
     content = v.content(prefer_draft=showing_draft)
@@ -255,12 +300,14 @@ async def document(request: Request) -> dict[str, Any]:
         "toc": toc(content),
         "blocks": render(content),
         "showing_draft": showing_draft,
+        "shown_version": shown.version_number if shown else None,
         "pending_draft": v.has_pending_draft and v.published is not None,
+        "pending_summary": _pending_summary(v.draft) if v.draft and v.published else "",
         "history": [
             {
                 "version": f"v{h.version_number}",
                 "note": h.change_note,
-                "author": h.author_user + (" (via AI)" if h.author_via_ai else ""),
+                "author": _author(h),
                 "when": _when(h.created_at),
                 "state": _version_state(h, doc),
             }
@@ -276,10 +323,26 @@ async def document(request: Request) -> dict[str, Any]:
         "related_assets": related_assets,
         "related_contracts": related_contracts,
         "next_review": _when(doc.next_review_at),
+        "review_due": doc.status == "published"
+        and doc.next_review_at is not None
+        and doc.next_review_at <= dt.date.today(),
         "can_write": _can("docs.write") and doc.status != "archived",
         "can_publish": _can("docs.publish"),
+        "help_site": doc.help_site,
+        "audience": audience.name if audience else "",
+        "can_share": can_share,
+        "audience_choices": audience_choices,
         "error": request.query_params.get("error"),
     }
+
+
+def _pending_summary(v: Version) -> str:
+    """'This document has unpublished changes (v3) by X on DATE: note.'"""
+    note = f": {v.change_note}" if v.change_note else ""
+    return (
+        f"This document has unpublished changes (v{v.version_number}) by {_author(v)} on "
+        f"{_when(v.created_at)}{note}."
+    )
 
 
 def _version_state(v: Version, doc: Document) -> dict[str, str]:
@@ -488,39 +551,52 @@ async def update_details(
     return _back(f"/docs/d/{slug}")
 
 
-async def _lifecycle(slug: str, who: Principal, action: str) -> RedirectResponse:
+async def _lifecycle(
+    slug: str, who: Principal, action: str, version: int | None = None
+) -> RedirectResponse:
     try:
         async with module.session() as s:
             doc = await _doc_or_404(s, slug)
             if action == "publish":
-                await service.publish(s, who, doc)
+                await service.publish(s, who, doc, version=version)
             elif action == "archive":
                 await service.archive(s, who, doc)
             elif action == "restore":
                 await service.restore(s, who, doc)
+            elif action == "reviewed":
+                await service.mark_reviewed(s, who, doc)
             elif action == "discard":
-                outcome = await service.discard(s, who, doc)
+                outcome = await service.discard(s, who, doc, version=version)
                 await s.commit()
                 return _back("/docs/" if outcome == "deleted" else f"/docs/d/{slug}")
             await s.commit()
     except DocsError as exc:
-        return _back(f"/docs/d/{slug}", str(exc))
+        # Publish and discard come from the draft view: back there, to the newest draft.
+        draft = "?draft=1" if action in ("publish", "discard") else ""
+        return _back(f"/docs/d/{slug}{draft}", str(exc))
     return _back(f"/docs/d/{slug}")
 
 
+# Publish and discard name the version the page showed (``?version=``), so a draft saved
+# after the page loaded (by an AI connection, say) is refused instead of acted on unread.
 @module.router.post("/documents/{slug}/publish")
-async def publish_document(slug: str, who: CanPublish) -> RedirectResponse:
-    return await _lifecycle(slug, who, "publish")
+async def publish_document(slug: str, who: CanPublish, version: int) -> RedirectResponse:
+    return await _lifecycle(slug, who, "publish", version)
 
 
 @module.router.post("/documents/{slug}/discard")
-async def discard_draft(slug: str, who: CanPublish) -> RedirectResponse:
-    return await _lifecycle(slug, who, "discard")
+async def discard_draft(slug: str, who: CanPublish, version: int) -> RedirectResponse:
+    return await _lifecycle(slug, who, "discard", version)
 
 
 @module.router.post("/documents/{slug}/archive")
 async def archive_document(slug: str, who: CanPublish) -> RedirectResponse:
     return await _lifecycle(slug, who, "archive")
+
+
+@module.router.post("/documents/{slug}/reviewed")
+async def document_reviewed(slug: str, who: CanWrite) -> RedirectResponse:
+    return await _lifecycle(slug, who, "reviewed")
 
 
 @module.router.post("/documents/{slug}/restore")
@@ -708,3 +784,158 @@ async def delete_collection(
     except DocsError as exc:
         return _back(f"/docs/collections/{slug}/delete", str(exc))
     return _back("/docs/collections")
+
+
+# ---- the help site (ADR 0028) -------------------------------------------------------------
+
+
+async def _audience_choices(s: Any) -> list[tuple[Any, str]]:
+    """The audience picker: everyone, then each audience (one nobody restricted yet says so:
+    it reaches everyone too)."""
+    out: list[tuple[Any, str]] = [("", "Everyone")]
+    for a in await service.audiences(s):
+        restricted = (await module.areas.access("audience", str(a.id)))["restricted"]
+        out.append((a.id, a.name if restricted else f"{a.name} (no groups yet: everyone)"))
+    return out
+
+
+@module.router.post("/documents/{slug}/help-site")
+async def set_help_site(
+    slug: str,
+    who: CanPublish,
+    shown: Annotated[str, Form()] = "",
+    audience_id: Annotated[str, Form()] = "",
+) -> RedirectResponse:
+    try:
+        async with module.session() as s:
+            doc = await _doc_or_404(s, slug)
+            await service.set_help_site(
+                s, who, doc, shown=shown == "1",
+                audience_id=int(audience_id) if audience_id.isdigit() else None,
+            )  # fmt: skip
+            await s.commit()
+    except DocsError as exc:
+        return _back(f"/docs/d/{slug}", str(exc))
+    return _back(f"/docs/d/{slug}#help-site")
+
+
+async def _audience_or_404(s: Any, audience_id: int) -> Audience:
+    a = await s.get(Audience, audience_id)
+    if a is None:
+        raise HTTPException(status_code=404, detail="Audience not found")
+    return a
+
+
+@module.page(
+    "/audiences",
+    template="audiences.html",
+    title="Help-site audiences",
+    permission="docs.collections.manage",
+)
+async def manage_audiences(request: Request) -> dict[str, Any]:
+    async with module.session() as s:
+        found = await service.audiences(s)
+        counts = await service.audience_counts(s)
+    access = {a.id: await module.areas.access("audience", str(a.id)) for a in found}
+    kept = module.forms.recall(request)
+    return {
+        "rows": [
+            {
+                "name": {"text": a.name, "href": f"/docs/audiences/{a.id}"},
+                "description": a.description,
+                "documents": counts.get(a.id, 0),
+                "access": {
+                    "badge": "Groups: " + ", ".join(access[a.id]["groups"]),
+                    "tone": "success",
+                }
+                if access[a.id]["restricted"]
+                else {"badge": "No groups yet: everyone", "tone": "warning"},
+            }
+            for a in found
+        ],
+        "name": kept.get("name") if kept else "",
+        "description": kept.get("description") if kept else "",
+        "error": request.query_params.get("error"),
+    }
+
+
+@module.page(
+    "/audiences/{audience_id}",
+    template="audience.html",
+    title="Audience",
+    permission="docs.collections.manage",
+)
+async def audience_page(request: Request) -> dict[str, Any]:
+    audience_id = request.path_params["audience_id"]
+    if not str(audience_id).isdigit():
+        raise HTTPException(status_code=404, detail="Audience not found")
+    async with module.session() as s:
+        a = await _audience_or_404(s, int(audience_id))
+        docs = await service.audience_documents(s, a)
+    kept = module.forms.recall(request)
+    return {
+        "page_title": a.name,
+        "audience": a,
+        "access": await module.areas.access("audience", str(a.id)),
+        "name": kept.get("name") if kept else a.name,
+        "description": kept.get("description") if kept else a.description,
+        "documents": [
+            {
+                "text": d.title,
+                "href": f"/docs/d/{d.slug}",
+                "note": d.collection.name
+                + (
+                    "" if d.help_site and d.status == "published" else " · not on the help site now"
+                ),
+            }
+            for d in docs
+        ],
+        "activity": await module.audit.history(kind="audience", entity_id=str(a.id)),
+        "error": request.query_params.get("error"),
+    }
+
+
+@module.router.post("/audiences")
+async def create_audience(
+    request: Request,
+    who: CanManageCollections,
+    name: Annotated[str, Form()] = "",
+    description: Annotated[str, Form()] = "",
+) -> RedirectResponse:
+    try:
+        async with module.session() as s:
+            a = await service.create_audience(s, name=name, description=description)
+            await s.commit()
+    except DocsError as exc:
+        return await module.forms.back(request, "/docs/audiences", str(exc))
+    return _back(f"/docs/audiences/{a.id}")
+
+
+@module.router.post("/audiences/{audience_id}")
+async def update_audience(
+    request: Request,
+    audience_id: int,
+    who: CanManageCollections,
+    name: Annotated[str, Form()] = "",
+    description: Annotated[str, Form()] = "",
+) -> RedirectResponse:
+    try:
+        async with module.session() as s:
+            a = await _audience_or_404(s, audience_id)
+            await service.update_audience(s, a, name=name, description=description)
+            await s.commit()
+    except DocsError as exc:
+        return await module.forms.back(request, f"/docs/audiences/{audience_id}", str(exc))
+    return _back(f"/docs/audiences/{audience_id}")
+
+
+@module.router.post("/audiences/{audience_id}/delete")
+async def delete_audience(audience_id: int, who: CanManageCollections) -> RedirectResponse:
+    try:
+        async with module.session() as s:
+            a = await _audience_or_404(s, audience_id)
+            await service.delete_audience(s, a)
+            await s.commit()
+    except DocsError as exc:
+        return _back(f"/docs/audiences/{audience_id}", str(exc))
+    return _back("/docs/audiences")

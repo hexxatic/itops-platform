@@ -1,0 +1,42 @@
+{% extends "core/shell.html" %}
+{% import "core/components.html" as ui %}
+{% block content %}
+{{ ui.breadcrumb([("Assets", "/assets/"), ("OS readiness", None)]) }}
+{% call ui.page_header("OS readiness", "Whether each device's hardware can run the operating system it would move to, and why not.") %}
+  {% if can_target %}{{ ui.button("Add an operating system", href="/assets/readiness/targets/new") }}{% endif %}
+{% endcall %}
+{% if error %}{{ ui.alert(error, "danger") }}{% endif %}
+
+{% for t in targets %}
+<section id="t{{ t.id }}" class="stack">
+{% call ui.card(t.name) %}
+  <p>{{ t.about }}</p>
+  {% if t.notes %}<p class="muted">{{ t.notes }}</p>{% endif %}
+  {{ ui.stat_tiles(t.tiles) }}
+  {% if t.showing %}<p class="muted">Showing {{ t.showing|lower }} only. <a href="/assets/readiness#t{{ t.id }}">Show all</a></p>{% endif %}
+  {{ ui.table(columns, t.rows, empty="No devices run a system this replaces.") }}
+  <div class="actions">
+    {{ ui.export_links(t.download) }}
+    {% if t.edit %}{{ ui.button("Change requirements", href=t.edit) }}{% endif %}
+  </div>
+  {% if t.source %}<p class="muted">Requirements from {{ t.source }}.</p>{% endif %}
+{% endcall %}
+</section>
+{% else %}
+{% call ui.card() %}
+  {{ ui.empty_state("No operating systems to check against yet", "An admin adds one, e.g. Windows 11 with Microsoft's requirements. When the next version comes, it's added the same way.") }}
+{% endcall %}
+{% endfor %}
+
+{% if can_target and presets %}
+{% call ui.card("Start from a preset") %}
+  <p class="muted">Requirements already written up. You can change them after adding.</p>
+  <div class="actions">
+  {% for name in presets %}
+  <form method="post" action="/api/assets/readiness/presets"><input type="hidden" name="name" value="{{ name }}">{{ ui.button("Add " ~ name, type="submit", variant="primary") }}</form>
+  {% endfor %}
+  </div>
+{% endcall %}
+{% endif %}
+<p class="muted">Hardware comes from the Processor, Memory, Storage and TPM fields on each device, filled by inventory syncs. Retired and ignored devices aren't checked.</p>
+{% endblock %}

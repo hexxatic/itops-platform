@@ -1,8 +1,8 @@
 {% extends "core/shell.html" %}
 {% import "core/components.html" as ui %}
 {% block content %}
+{{ ui.breadcrumb([(module_title, base|replace("/types", "/")), ("Types", base), (view.current.definition.name, None)]) }}
 {% call ui.page_header(view.current.definition.name, module_title ~ " type · " ~ view.key) %}
-  {{ ui.button("All " ~ module_title ~ " types", href=base) }}
   {% if view.status != "retired" %}{{ ui.button("Edit", href=base ~ "/" ~ view.key ~ "/edit", variant="primary") }}{% endif %}
   {% if view.draft %}
     {% if can_approve %}{{ ui.action_button("Publish", api ~ "/" ~ view.key ~ "/publish", variant="primary") }}{% endif %}

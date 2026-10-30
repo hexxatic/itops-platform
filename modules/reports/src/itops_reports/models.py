@@ -77,3 +77,41 @@ class Definition(Base):
     updated_at: Mapped[dt.datetime] = mapped_column(DateTime, default=lambda: utcnow())
     published_by: Mapped[str | None] = mapped_column(Unicode(200), default=None)
     published_at: Mapped[dt.datetime | None] = mapped_column(DateTime, default=None)
+
+
+class Proposal(Base):
+    """Rows AI proposed for a typed-in dataset; added only when a person approves them."""
+
+    __tablename__ = "proposals"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    dataset_id: Mapped[int | None] = mapped_column(ForeignKey("reports.datasets.id"))
+    # Set while the rows wait for a proposed dataset (dataset_id is None until it's created).
+    dataset_proposal_id: Mapped[int | None] = mapped_column(
+        ForeignKey("reports.dataset_proposals.id"), default=None
+    )
+    rows: Mapped[str] = mapped_column("rows", UnicodeText)  # JSON: a list of row values
+    row_count: Mapped[int] = mapped_column(Integer)
+    note: Mapped[str] = mapped_column(Unicode(1000), default="")
+    status: Mapped[str] = mapped_column(Unicode(20), default="pending")
+    proposed_by: Mapped[str] = mapped_column(Unicode(200))
+    proposed_at: Mapped[dt.datetime] = mapped_column(DateTime, default=lambda: utcnow())
+    decided_by: Mapped[str | None] = mapped_column(Unicode(200), default=None)
+    decided_at: Mapped[dt.datetime | None] = mapped_column(DateTime, default=None)
+
+
+class DatasetProposal(Base):
+    """A typed-in dataset AI proposed; created only when a person with reports.publish
+    approves it."""
+
+    __tablename__ = "dataset_proposals"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    key: Mapped[str] = mapped_column("key", Unicode(60))
+    spec: Mapped[str] = mapped_column(UnicodeText)  # JSON: DatasetInput fields
+    note: Mapped[str] = mapped_column(Unicode(1000), default="")
+    status: Mapped[str] = mapped_column(Unicode(20), default="pending")
+    proposed_by: Mapped[str] = mapped_column(Unicode(200))
+    proposed_at: Mapped[dt.datetime] = mapped_column(DateTime, default=lambda: utcnow())
+    decided_by: Mapped[str | None] = mapped_column(Unicode(200), default=None)
+    decided_at: Mapped[dt.datetime | None] = mapped_column(DateTime, default=None)

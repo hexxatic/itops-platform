@@ -1,0 +1,12 @@
+{#- A run's problems (to act on) and notes (only to know), from itops.core.problems.rows. -#}
+{% if problems %}
+{% call ui.card("Problems (" ~ problems|length ~ ")") %}
+  {{ ui.table([("item", "Item"), ("text", "Problem"), ("act", "")], problems) }}
+{% endcall %}
+{% endif %}
+{% if notes %}
+{% call ui.card("Notes (" ~ notes|length ~ ")") %}
+  <p class="muted">What the run decided or noticed. Nothing to do unless it looks wrong.</p>
+  {{ ui.table([("item", "Item"), ("text", "Note"), ("act", "")], notes) }}
+{% endcall %}
+{% endif %}

@@ -7,6 +7,7 @@ import re
 from collections.abc import AsyncGenerator
 from contextlib import asynccontextmanager
 from pathlib import Path
+from urllib.parse import unquote
 
 import httpx
 import pytest
@@ -65,9 +66,9 @@ async def test_create_is_a_draft_until_published(database_url: str, tmp_path: Pa
         page = (await c.get(f"/docs/d/{slug}")).text
         assert "looking at the draft" in page
         assert "Plug in" in page
-        assert "Drafts waiting to be published" in (await c.get("/docs/")).text
+        assert "Waiting for you: to publish" in (await c.get("/docs/")).text
 
-        assert (await c.post(f"/api/docs/documents/{slug}/publish")).status_code == 303
+        assert (await c.post(f"/api/docs/documents/{slug}/publish?version=1")).status_code == 303
         page = (await c.get(f"/docs/d/{slug}")).text
         assert "looking at the draft" not in page
         assert "Published" in page
@@ -79,7 +80,7 @@ async def test_edit_keeps_readers_on_the_published_version(
 ) -> None:
     async with running(database_url, tmp_path) as c:
         slug = await new_doc(c, "Backup policy", TextBlock(html="<p>Version one</p>"))
-        await c.post(f"/api/docs/documents/{slug}/publish")
+        await c.post(f"/api/docs/documents/{slug}/publish?version=1")
         r = await c.post(
             f"/api/docs/documents/{slug}/save",
             data={"content": body(TextBlock(html="<p>Version two</p>")), "change_note": "v2"},
@@ -87,13 +88,60 @@ async def test_edit_keeps_readers_on_the_published_version(
         assert r.status_code == 303
         reader = (await c.get(f"/docs/d/{slug}")).text
         assert "Version one" in reader and "Version two" not in reader
-        assert "unpublished changes" in reader
+        assert "unpublished changes (v2) by" in reader and ": v2." in reader
+        # Reviewers find the edit without the link: on Docs' home and in its collection.
+        home = (await c.get("/docs/")).text
+        assert "Waiting for you: to publish" in home and f"/docs/d/{slug}?draft=1" in home
+        assert "Edit pending" in (await c.get("/docs/c/general")).text
         assert "Version two" in (await c.get(f"/docs/d/{slug}?draft=1")).text
         assert "Version two" in (await c.get(f"/docs/d/{slug}/edit")).text
 
-        await c.post(f"/api/docs/documents/{slug}/discard")  # drop the draft
+        await c.post(f"/api/docs/documents/{slug}/discard?version=2")  # drop the draft
         reader = (await c.get(f"/docs/d/{slug}")).text
         assert "Version one" in reader and "unpublished changes" not in reader
+        assert "Waiting for you: to publish" not in (await c.get("/docs/")).text
+
+
+async def test_publish_and_discard_act_only_on_the_version_reviewed(
+    database_url: str, tmp_path: Path
+) -> None:
+    """A draft saved after the page loaded (here by an AI connection) is never published
+    or discarded unread: the person is sent back to read it."""
+    async with running(database_url, tmp_path) as c:
+        slug = await new_doc(c, "Guest Wi-Fi", TextBlock(html="<p>Version one</p>"))
+        await c.post(f"/api/docs/documents/{slug}/publish?version=1")
+        await c.post(
+            f"/api/docs/documents/{slug}/save",
+            data={"content": body(TextBlock(html="<p>Version two</p>")), "change_note": "v2"},
+        )
+        # The published view doesn't offer Publish: the draft isn't what's on screen.
+        reader = (await c.get(f"/docs/d/{slug}")).text
+        assert "/publish?" not in reader and "/discard?" not in reader
+        assert "Review the draft to publish it" in reader
+        # The draft view publishes the version it shows.
+        draft = (await c.get(f"/docs/d/{slug}?draft=1")).text
+        publish = re.search(r'action="(/api/docs/documents/[^"]+/publish\?version=\d+)"', draft)
+        discard = re.search(r'action="(/api/docs/documents/[^"]+/discard\?version=\d+)"', draft)
+        assert publish and discard and publish[1].endswith("version=2") and "Publish v2" in draft
+
+        await McpClient([module]).call(
+            "docs_update_document", slug=slug, change_note="AI", markdown="Version three"
+        )
+        for url in (publish[1], discard[1]):
+            r = await c.post(url)
+            assert r.headers["location"].startswith(f"/docs/d/{slug}?draft=1&error=")
+            assert "v3 was saved by dev (via AI) after you opened v2" in unquote(
+                r.headers["location"]
+            )
+        reader = (await c.get(f"/docs/d/{slug}")).text
+        assert "Version one" in reader and "unpublished changes (v3)" in reader
+
+        # Once it's been read (the page now shows v3), it publishes.
+        r = await c.post(f"/api/docs/documents/{slug}/publish?version=3")
+        assert r.headers["location"] == f"/docs/d/{slug}"
+        assert "Version three" in (await c.get(f"/docs/d/{slug}")).text
+        # Without the version it's refused: it's how the page says what the person saw.
+        assert (await c.post(f"/api/docs/documents/{slug}/publish")).status_code == 422
 
 
 async def test_discarding_a_never_published_doc_deletes_it(
@@ -101,7 +149,7 @@ async def test_discarding_a_never_published_doc_deletes_it(
 ) -> None:
     async with running(database_url, tmp_path) as c:
         slug = await new_doc(c, "Scratch", TextBlock(html="<p>temp</p>"))
-        r = await c.post(f"/api/docs/documents/{slug}/discard")
+        r = await c.post(f"/api/docs/documents/{slug}/discard?version=1")
         assert r.headers["location"] == "/docs/"
         assert (await c.get(f"/docs/d/{slug}")).status_code == 404
 
@@ -109,7 +157,7 @@ async def test_discarding_a_never_published_doc_deletes_it(
 async def test_archive_and_restore(database_url: str, tmp_path: Path) -> None:
     async with running(database_url, tmp_path) as c:
         slug = await new_doc(c, "Old VPN", TextBlock(html="<p>legacy</p>"))
-        await c.post(f"/api/docs/documents/{slug}/publish")
+        await c.post(f"/api/docs/documents/{slug}/publish?version=1")
         await c.post(f"/api/docs/documents/{slug}/archive")
         assert "Archived" in (await c.get(f"/docs/d/{slug}")).text
         assert "Old VPN" not in (await c.get("/docs/c/general")).text
@@ -137,9 +185,12 @@ async def test_ai_can_draft_but_never_publish(database_url: str, tmp_path: Path)
             doc = await service.by_slug(s, slug)
             assert doc is not None
             await service.save(s, AI, doc, Content(blocks=[TextBlock(html="<p>ai edit</p>")]))
-            for action in (service.publish, service.discard, service.archive):
-                with pytest.raises(DocsError, match="done by a person"):
-                    await action(s, AI, doc)
+            with pytest.raises(DocsError, match="done by a person"):
+                await service.publish(s, AI, doc, version=2)
+            with pytest.raises(DocsError, match="done by a person"):
+                await service.discard(s, AI, doc, version=2)
+            with pytest.raises(DocsError, match="done by a person"):
+                await service.archive(s, AI, doc)
             await s.commit()
             history = await service.versions(s, doc.id)
         assert history[0].author_via_ai and history[0].author_client == "mcp"
@@ -198,12 +249,12 @@ async def actions(slug: str) -> list[tuple[str, bool]]:
 async def test_lifecycle_is_audited(database_url: str, tmp_path: Path) -> None:
     async with running(database_url, tmp_path) as c:
         slug = await new_doc(c, "Audit me", TextBlock(html="<p>one</p>"))
-        await c.post(f"/api/docs/documents/{slug}/publish")
+        await c.post(f"/api/docs/documents/{slug}/publish?version=1")
         await c.post(
             f"/api/docs/documents/{slug}/save",
             data={"content": body(TextBlock(html="<p>two</p>")), "change_note": "typo"},
         )
-        await c.post(f"/api/docs/documents/{slug}/discard")
+        await c.post(f"/api/docs/documents/{slug}/discard?version=2")
         await c.post(f"/api/docs/documents/{slug}/archive")
         await c.post(f"/api/docs/documents/{slug}/restore")
 
@@ -251,7 +302,9 @@ async def test_ai_cannot_change_a_published_documents_details(
                 who=AI,
             )
             await s.commit()
-        assert (await c.post(f"/api/docs/documents/{doc.slug}/publish")).status_code == 303
+        assert (
+            await c.post(f"/api/docs/documents/{doc.slug}/publish?version=1")
+        ).status_code == 303
         async with module.session() as s:
             doc = await service.by_slug(s, doc.slug)
             assert doc is not None and doc.status == "published"

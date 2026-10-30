@@ -29,6 +29,10 @@ in its text).
   `docs.type_usage`, `docs.move_type`, `docs.archive_type`, `docs.typed_documents` (a type's
   published documents with values and files, for moving them to another module); for areas: `docs.describe_area`,
   `docs.area_entities`, `docs.visible_entity` (core's `/files` asks it about a document's files)
+- **MCP tools:** `docs_list_collections`, `docs_list_documents` (`status="pending"`: new
+  drafts and published documents with unpublished edits, as on Docs' home), `docs_search`,
+  `docs_get_document` (read); `docs_create_document`, `docs_update_document` (`docs.write`;
+  they save drafts)
 - **Depends on:** core; `assets` optional (link fields to assets, the "Assets" card on a
   document); `contracts` optional (the "Contracts" card on a vendor's document)
 
@@ -37,9 +41,11 @@ in its text).
 - **Documents hold identity, versions hold content.** Versions are immutable; every
   save is a new draft version; publishing stamps the newest version and repoints
   `documents.current_version_id`. Never update a version's content in place.
-- **All changes go through `service.py`** (pages today, MCP tools next) so the draft
+- **All changes go through `service.py`** (pages and MCP tools) so the draft
   rule lives in one place. `service` also refuses publish/discard/archive for AI
-  principals as a second lock behind the `docs.publish` permission.
+  principals as a second lock behind the `docs.publish` permission. Publish and discard
+  take the version number the page showed (`?version=`) and refuse if a newer draft was
+  saved since, so nothing goes live (or away) unread.
 - Content is the core block format (`itops.sdk.content`), stored as JSON in
   `docs.versions.content` and normalized (sanitized) on every save.
 - **Every write is audited** (`service._audit`, ADR 0006): created, edited,

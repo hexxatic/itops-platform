@@ -68,7 +68,7 @@ async def test_logins_are_versioned_references_never_secrets(
             "login_ref": [LINK, ""],
         })  # fmt: skip
         assert "error" not in r.headers["location"]
-        await c.post(f"/api/docs/documents/{slug}/publish")
+        await c.post(f"/api/docs/documents/{slug}/publish?version=2")
         page = (await c.get(f"/docs/d/{slug}")).text
         assert "Logins (1)" in page and REF not in page
         async with module.session() as s:

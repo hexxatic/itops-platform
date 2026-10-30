@@ -9,6 +9,7 @@ import pytest
 
 from itops.core.areas import (  # pyright: ignore[reportPrivateUsage]
     AreaError,
+    Areas,
     Restriction,
     _describe,
     clean_groups,
@@ -16,6 +17,7 @@ from itops.core.areas import (  # pyright: ignore[reportPrivateUsage]
 from itops.core.auth import ALL, Principal
 from itops.core.identity import Identity, group_names, principal_from_access_token
 from itops.core.manifest import Manifest
+from itops.sdk import Search
 
 READER = Principal("pat@example.com", "Pat", frozenset({"docs.read"}))
 MEMBER = replace(READER, groups=frozenset({"app-itops-security"}))
@@ -80,6 +82,22 @@ def test_a_module_with_areas_names_them() -> None:
     assert Manifest.model_validate({**base, "provides": both}).areas == {"folder": "Folder"}
     with pytest.raises(ValueError, match="area kind"):
         Manifest.model_validate({**base, "areas": {"Bad-Kind": "x"}, "provides": both})
+
+
+def test_a_search_entry_may_carry_an_area_another_module_handed_over() -> None:
+    """kb indexes Docs' how-tos with their Docs audience (ADR 0028)."""
+    areas = Areas()
+    areas.declare("docs", {"audience": "Help-site audience"})
+    module = SimpleNamespace(
+        name="kb", runtime=SimpleNamespace(areas=areas),
+        areas=SimpleNamespace(id=lambda kind, key: f"kb:{kind}:{key}"),
+    )  # fmt: skip
+    search = Search(module)  # type: ignore[arg-type]
+    assert search._area("docs:audience:5") == "docs:audience:5"  # pyright: ignore[reportPrivateUsage]
+    assert search._area(("folder", "1")) == "kb:folder:1"  # pyright: ignore[reportPrivateUsage]
+    for made_up in ("docs:collection:5", "notes:audience:5", "docs:audience"):
+        with pytest.raises(ValueError, match="isn't an area"):
+            search._area(made_up)  # pyright: ignore[reportPrivateUsage]
 
 
 def test_an_ai_connection_carries_its_owners_groups() -> None:

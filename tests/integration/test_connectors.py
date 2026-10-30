@@ -102,6 +102,13 @@ async def test_a_connector_syncs_into_assets(database_url: str, tmp_path: Path) 
         assert first.counts == {"created": 2}
         found = await devices()
         sql_id = found[f"SQL-{tag}"]["id"]
+        # The run's page lists what it created, each linked to its record.
+        page = (await c.get(f"/connectors/runs/{first.id}")).text
+        assert "Created (2)" in page and f'href="/assets/r/{sql_id}"' in page
+        # The outcome table shows the run's own counts (the nav's badges once replaced them).
+        assert "<td>created</td><td>2</td>" in page.replace("\n", "").replace(" ", "")
+        csv = (await c.get(f"/connectors/runs/{first.id}/items.csv?outcome=created")).text
+        assert f"SQL-{tag}" in csv and f"APP-{tag}" in csv
         assert found[f"SQL-{tag}"]["model"] == "R650"  # first import brings every value
         async with runtime.sessionmaker() as s:
             actor = (await s.execute(text(
@@ -133,6 +140,13 @@ async def test_a_connector_syncs_into_assets(database_url: str, tmp_path: Path) 
         }
         changed = await run(runtime)
         assert changed.counts == {"updated": 1, "unchanged": 1}
+        # Updated items say what changed; unchanged ones are only counted.
+        assert await runtime.connectors.items(changed.id) == [
+            {"outcome": "updated", "item": f"SQL-{tag}", "url": f"/assets/r/{sql_id}",
+             "detail": "Primary IP"}
+        ]  # fmt: skip
+        page = (await c.get(f"/connectors/runs/{changed.id}")).text
+        assert "Updated (1)" in page and "Unchanged (" not in page
         mine = (await devices())[f"SQL-{tag}"]
         assert (
             mine["primary_ip"] == "10.0.0.9"
@@ -159,7 +173,11 @@ async def test_a_connector_syncs_into_assets(database_url: str, tmp_path: Path) 
         assert "No longer in Inventory since" in (await c.get(f"/assets/r/{app_id}")).text
 
         run_page = (await c.get(f"/connectors/runs/{gone.id}")).text
-        assert "no longer in Inventory" in run_page
+        assert "1 record(s) Inventory no longer lists" in run_page
+        missing = gone.problems[0]["url"]
+        assert f'href="{missing}"' in run_page
+        listed = (await c.get(missing)).text  # the list, linked to each record
+        assert f'href="/assets/r/{app_id}"' in listed and f"APP-{tag}" in listed
         assert "missing from source" in (await c.get(f"/connectors/{KEY}")).text
 
 

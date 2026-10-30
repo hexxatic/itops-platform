@@ -1,0 +1,105 @@
+{% extends "core/shell.html" %}
+{% import "core/components.html" as ui %}
+{% block content %}
+{{ ui.breadcrumb([("Budget", "/budget/"), ("Assumptions and prices", None)]) }}
+{{ ui.page_header("Assumptions and prices", "What the forecast assumes where there's no data yet, and the prices it multiplies by. Every change is recorded.") }}
+{% if error %}{{ ui.alert(error, "danger") }}{% endif %}
+
+{% if proposals %}<div id="proposals">{% include "budget/proposals_list.html" %}</div>{% endif %}
+
+{% call ui.card("Price list") %}
+<div class="stack">
+<p class="muted" id="prices">Type these in from the latest quote. Several prices for the same kind of computer are averaged; kit items are added up into the kit each new seat gets.</p>
+{{ ui.table([("item", "Item"), ("for", "For"), ("price", "Price"), ("source", "Source"), ("quoted", "Quoted"), ("remove", "")], price_rows, empty="No prices yet: until there are, the forecast counts computers but can't total them.") }}
+{% for p in prices %}
+{% call ui.disclosure("Change " ~ p.item) %}
+<form method="post" action="/api/budget/prices/{{ p.id }}">
+  <div class="grid">
+    {{ ui.field("item", "Item", p.item, required=True) }}
+    {{ ui.select("category", "For", categories, selected=p.category) }}
+    {{ ui.field("unit_price", "Price ($)", p.unit_price, required=True) }}
+    {{ ui.field("source", "Source", p.source) }}
+    {{ ui.field("quoted_on", "Quoted", p.quoted_on, type="date") }}
+  </div>
+  <div class="actions">{{ ui.button("Save", type="submit", variant="primary") }}</div>
+</form>
+{% endcall %}
+{% endfor %}
+<form method="post" action="/api/budget/prices" class="stack">
+  <h3>Add a price</h3>
+  <div class="grid">
+    {{ ui.field("item", "Item", new_price.item, required=True, help="e.g. Standard laptop, 24-inch monitor") }}
+    {{ ui.select("category", "For", categories, selected=new_price.category) }}
+    {{ ui.field("unit_price", "Price ($)", new_price.unit_price, required=True) }}
+    {{ ui.field("source", "Source", new_price.source, help="e.g. Dell quote 1234") }}
+    {{ ui.field("quoted_on", "Quoted", new_price.quoted_on, type="date") }}
+  </div>
+  <div class="actions">{{ ui.button("Add price", type="submit", variant="primary") }}</div>
+</form>
+</div>
+{% endcall %}
+
+<form method="post" action="/api/budget/assumptions" class="stack">
+{% call ui.card("The fleet") %}
+<div class="grid-2">
+  {{ ui.field("laptop_kinds", "Device kinds that are laptops", v.laptop_kinds, help="Kinds of the Device type in Assets, separated by commas.") }}
+  {{ ui.field("desktop_kinds", "Device kinds that are desktops", v.desktop_kinds) }}
+  {{ ui.field("in_use_days", "In use if seen on the network within (days)", v.in_use_days, type="number", help="Computers marked Active count whenever they were last seen.") }}
+</div>
+{% endcall %}
+
+{% call ui.card("Replacements") %}
+<p class="muted">With no refresh policy, computers are replaced when they fail or can't keep up. These are the share replaced in a year, by age. Purchase history will show whether they're right.</p>
+<div class="grid-2">
+  {% for r in rates %}{{ ui.field(r.name, r.label, r.value, type="number") }}{% endfor %}
+</div>
+<div class="grid-2">
+  {{ ui.field("must_replace_age", "Must replace at (years old)", v.must_replace_age, type="number") }}
+  {{ ui.field("unsupported_os", "Operating systems out of support", v.unsupported_os, help="Computers running one of these must be replaced, unless their hardware can be upgraded (OS readiness in Assets, else the models below). Separate with commas.") }}
+  {{ ui.field("upgradeable_models", "Models that can be upgraded in place", v.upgradeable_models, help="Only for computers Assets has no hardware for (processor, memory, TPM): on an unsupported system, these models are upgraded by IT, not replaced. Computers with hardware are judged by OS readiness in Assets. Separate with commas.") }}
+  {{ ui.field("equipment_models", "Models left out (their own equipment)", v.equipment_models, help="Machine controllers, gauges, room systems: left out of the budget and listed under Not in this budget. One computer at a time: Leave a computer out, on the Budget page. Separate with commas.") }}
+</div>
+{% endcall %}
+
+{% call ui.card("Who gets a computer of their own (the seat rule)") %}
+<p class="muted">Someone gets a seat if they match any of these. Growth counts seats, not people: most turnover is in jobs without a computer of their own.</p>
+<div class="grid-2">
+  {{ ui.field("pay_types", "Pay types", v.pay_types, help=("In the HR data: " ~ pay_type_values|join(", ")) if pay_type_values else None) }}
+  {{ ui.field("dept_groups", "Department groups", v.dept_groups, help=("In the HR data: " ~ dept_group_values|join(", ")) if dept_group_values else None) }}
+  {{ ui.field("departments", "Departments", v.departments) }}
+  {{ ui.field("positions", "Positions", v.positions) }}
+  {{ ui.field("active_status", "Status of current employees", v.active_status) }}
+  {{ ui.field("growth_years", "Years of hiring history to average", v.growth_years, type="number") }}
+</div>
+{% endcall %}
+
+{% call ui.card("Peripherals, contingency and scenarios") %}
+<div class="grid-2">
+  {{ ui.field("kit_replacement_pct", "Peripherals wearing out (% of a kit per computer a year)", v.kit_replacement_pct, type="number") }}
+  {{ ui.field("contingency_pct", "Contingency (%)", v.contingency_pct, type="number") }}
+  {{ ui.field("low_factor", "Low scenario: failures (% of expected)", v.low_factor, type="number") }}
+  {{ ui.field("high_factor", "High scenario: failures (% of expected)", v.high_factor, type="number") }}
+</div>
+{% endcall %}
+
+{% call ui.card("Five-year plan") %}
+<p class="muted">Which plan budgets next year, and its levers. The Budget page shows every plan side by side.</p>
+<div class="grid-2">
+  {{ ui.select("plan", "Plan", plans, selected=v.plan) }}
+  {{ ui.field("steady_years", "Replacement cycle (years)", v.steady_years, type="number", help="Replacement cycle and Lease plans: about one computer in this many is replaced each year.") }}
+  {{ ui.field("plan_amount", "Yearly amount ($)", v.plan_amount, help="Yearly amount plan: what can be spent each year, everything included.") }}
+  {{ ui.field("reuse_pct", "Leavers' computers reused (%)", v.reuse_pct, type="number", help="Of the net leavers a year (hiring history): their computers go to someone whose computer is due.") }}
+  {{ ui.field("price_rise_pct", "Prices rise a year (%)", v.price_rise_pct, type="number") }}
+  {{ ui.field("lease_markup_pct", "A lease costs more by (%)", v.lease_markup_pct, type="number", help="Lease plan, until a lease is quoted: over the purchase price, across the term.") }}
+</div>
+{% endcall %}
+
+{% call ui.card("Where the history comes from") %}
+<div class="grid-2">
+  {{ ui.field("hr_dataset", "HR dataset (its key in Reports)", v.hr_dataset) }}
+  {{ ui.field("purchases_dataset", "Purchase-history dataset (its key in Reports)", v.purchases_dataset, help="Columns: date, category, quantity, unit cost or total (money), reason: the Purchase column type.") }}
+</div>
+{% endcall %}
+<div class="actions">{{ ui.button("Save assumptions", type="submit", variant="primary") }}{{ ui.button("Cancel", href="/budget/", variant="ghost") }}</div>
+</form>
+{% endblock %}

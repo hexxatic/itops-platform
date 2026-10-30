@@ -1,10 +1,11 @@
 {% extends "core/shell.html" %}
 {% import "core/components.html" as ui %}
 {% block content %}
+{% if mode == "new" %}{{ ui.breadcrumb([("Contracts", "/contracts/"), ("New contract", None)]) }}{% else %}{{ ui.breadcrumb([("Contracts", "/contracts/"), (contract.name, "/contracts/c/" ~ contract.id), ("Edit", None)]) }}{% endif %}
 {% if mode == "new" %}
   {{ ui.page_header("New contract", "The contract and its current term. Renewing later adds the next term.") }}
 {% else %}
-  {% call ui.page_header("Edit: " ~ contract.name) %}{{ ui.button("Back to contract", href="/contracts/c/" ~ contract.id) }}{% endcall %}
+  {{ ui.page_header("Edit: " ~ contract.name) }}
 {% endif %}
 {% if error %}{{ ui.alert(error, "danger") }}{% endif %}
 {% if mode == "new" and can_suggest %}

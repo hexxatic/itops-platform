@@ -25,8 +25,9 @@ customers, leases), not purchasing or invoicing.
 - **Jobs:** `renewals` (daily 06:00): marks terms due, publishes the reminders, marks ended
   undecided terms lapsed (unless the contract auto-renews)
 - **MCP tools:** `contracts_list_contracts`, `contracts_get_contract`,
-  `contracts_renewals_due` (read); `contracts_draft_contract`, `contracts_update_draft`
-  (`contracts.write`; drafts only)
+  `contracts_renewals_due`, `contracts_list_cost_proposals` (read; never amounts);
+  `contracts_draft_contract`, `contracts_update_draft` (`contracts.write`; drafts only),
+  `contracts_propose_costs` (`contracts.write`; a proposal a person applies)
 - **Depends on:** core; `docs` and `assets` optional (the vendor document and covered assets
   as links)
 
@@ -42,9 +43,19 @@ customers, leases), not purchasing or invoicing.
   (a writer) -> `renewed` / `cancelled` (an approver) or `lapsed` (job: ended, undecided,
   not auto-renewing). `terms.notified` remembers which reminders went out; changing a
   term's dates resets it.
-- **Costs never reach AI**: tools don't return or take them; pages show them only with
+- **Costs never reach AI**: tools don't return them (they take them only as a proposal); pages show them only with
   `contracts.costs` (`service.can_see_costs`), and saving a term without that permission
   keeps the cost as it was.
+- **Rates** (`contracts.rates`, ADR 0014 amended 2026-10-28): per-unit usage prices on a
+  term (item, price to five places, included a month). Costs in every way: `contracts.costs`
+  only, no amounts in audit text or search, never to AI. Edited on the term form (repeated
+  `rate_item` / `rate_price` / `rate_included`, three spare rows); `service.set_rates`
+  replaces the list. Renewing copies them to the new term.
+- **Costs AI proposes** (`contracts.proposals`): `service.propose_costs` stores a term's
+  cost and/or whole rate list, checked like a save, for anyone with `contracts.write`
+  (AI included); `service.decide_proposal` applies or rejects it, `contracts.costs` and
+  never AI. The proposer reads back status only (`proposal_what`: "a cost and 2 rates").
+  Pending ones show on `/contracts/proposals`, the contract's page and *Waiting for you*.
 - **AI drafts:** a via-AI create makes a `draft` contract (not in lists, search or
   reminders); `service` refuses AI on everything but drafts; a person accepts or discards.
 - **Term files are not in search** on purpose: invoices and quotes carry prices, and search

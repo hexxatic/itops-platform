@@ -64,6 +64,18 @@ def _mount_module(
         assert runtime.sessionmaker is not None
         return runtime.sessionmaker
 
+    async def hidden_types() -> frozenset[str]:
+        """Types the viewer can't see, where the module's areas are its record types (ADR
+        0012): restricted ones, and for AI connections and tokens those kept out of AI. The
+        same as the MCP type tools, so these pages aren't a way around them."""
+        if "type" not in runtime.areas.kinds.get(module, {}):
+            return frozenset()
+        return await runtime.areas.hidden(auth.current(), module, "type")
+
+    async def visible_or_404(key: str) -> None:
+        if key in await hidden_types():
+            raise HTTPException(status_code=404)
+
     def page(request: Request, template: str, ctx: dict[str, Any], status: int = 200) -> Response:
         return templates.TemplateResponse(
             request,
@@ -104,6 +116,7 @@ def _mount_module(
             "core/type_edit.html",
             {
                 "page_title": "New type" if key is None else f"Edit {definition.get('name', key)}",
+                "current_module": module,
                 "key": key,
                 "definition": definition,
                 "locked": locked,
@@ -121,6 +134,8 @@ def _mount_module(
         require_draft()
         async with maker()() as s:
             views = await runtime.types.list_types(s, module, include_drafts=True)
+        hidden = await hidden_types()
+        views = [v for v in views if v.key not in hidden]
         show_retired = request.query_params.get("retired") == "1"
         retired = sum(1 for v in views if v.status == "retired")
         rows = [
@@ -139,6 +154,7 @@ def _mount_module(
             "core/types.html",
             {
                 "page_title": f"{title} types",
+                "current_module": module,
                 "rows": rows,
                 "retired": retired,
                 "show_retired": show_retired,
@@ -158,8 +174,9 @@ def _mount_module(
         problems: list[str] = []
         async with maker()() as s:
             views = await runtime.types.list_types(s, module, include_drafts=True)
+        hidden = await hidden_types()
         for v in views:
-            if v.draft is None:
+            if v.draft is None or v.key in hidden:
                 continue
             try:
                 async with maker()() as s:
@@ -185,6 +202,7 @@ def _mount_module(
     @app.get(f"{base}/{{key}}", response_class=HTMLResponse, include_in_schema=False)
     async def view_page(request: Request, key: str) -> Response:  # pyright: ignore[reportUnusedFunction]
         require_draft()
+        await visible_or_404(key)
         async with maker()() as s:
             view = await runtime.types.get(s, module, key)
             history = await runtime.types.history(s, module, key)
@@ -205,6 +223,7 @@ def _mount_module(
             "core/type.html",
             {
                 "page_title": view.current.definition.name,
+                "current_module": module,
                 "view": view,
                 "tone": STATUS_TONE[view.status],
                 "changes": changes,
@@ -235,6 +254,7 @@ def _mount_module(
         require_draft()
         if not can_approve():
             raise HTTPException(status_code=403, detail="Retiring a type is for admins.")
+        await visible_or_404(key)
         async with maker()() as s:
             view = await runtime.types.get(s, module, key)
             others = await runtime.types.list_types(s, module)
@@ -243,15 +263,16 @@ def _mount_module(
         usage = await module_service("type_usage", key)
         choices = [("keep", "Keep them as they are (they keep this type)")]
         if runtime.registry.get(f"{module}.move_type") is not None:
+            hidden = await hidden_types()
             choices += [(f"move:{v.key}", f"Move them to {v.current.definition.name}")
-                        for v in others if v.key != key]  # fmt: skip
+                        for v in others if v.key != key and v.key not in hidden]  # fmt: skip
         if runtime.registry.get(f"{module}.archive_type") is not None:
             choices.append(("archive", "Archive them as well"))
         return page(
             request,
             "core/type_retire.html",
             {"page_title": f"Retire {view.current.definition.name}", "view": view,
-             "usage": usage, "choices": choices},
+             "current_module": module, "usage": usage, "choices": choices},
         )  # fmt: skip
 
     @app.post(f"{api}/{{key}}/retire", include_in_schema=False)
@@ -259,13 +280,14 @@ def _mount_module(
         """Retire the type, after moving or archiving its records if asked."""
         if not can_approve():
             raise HTTPException(status_code=403, detail="Retiring a type is for admins.")
+        await visible_or_404(key)
         notice = ""
         try:
             if then.startswith("move:"):
                 to = then.removeprefix("move:")
                 async with maker()() as s:
                     offered = {v.key for v in await runtime.types.list_types(s, module)}
-                if to == key or to not in offered:
+                if to == key or to not in offered - await hidden_types():
                     raise TypeProblem(f"{to!r} isn't a published type to move records to.")
                 done = await module_service("move_type", key, to)
                 if done is None:
@@ -297,6 +319,7 @@ def _mount_module(
     @app.get(f"{base}/{{key}}/edit", response_class=HTMLResponse, include_in_schema=False)
     async def edit_page(request: Request, key: str) -> Response:  # pyright: ignore[reportUnusedFunction]
         require_draft()
+        await visible_or_404(key)
         async with maker()() as s:
             view = await runtime.types.get(s, module, key)
         if view is None:
@@ -309,6 +332,8 @@ def _mount_module(
         request: Request, key: str | None, name: str, description: str, fields: str, note: str
     ) -> Response:
         require_draft()
+        if key is not None:
+            await visible_or_404(key)
         try:
             parsed: Any = json.loads(fields or "[]")
         except json.JSONDecodeError:
@@ -352,6 +377,7 @@ def _mount_module(
         return await save(request, key, name, description, fields, note)
 
     async def lifecycle(key: str, action: str) -> Response:
+        await visible_or_404(key)
         try:
             async with maker()() as s:
                 if action == "publish":

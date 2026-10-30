@@ -1,0 +1,8 @@
+{% extends "core/shell.html" %}
+{% import "core/components.html" as ui %}
+{% block content %}
+{{ ui.breadcrumb([("Admin", "/admin"), ("Connectors", "/connectors"), (reg.decl.title, "/connectors/" ~ reg.key), ("No longer in " ~ reg.decl.system, None)]) }}
+{% call ui.page_header("No longer in " ~ reg.decl.system ~ ": " ~ source_type, "Records " ~ reg.decl.system ~ " stopped listing (found by a complete run). Open each one: delete it if it's really gone. If it's still in use, " ~ reg.decl.system ~ " has dropped or deactivated it: fix that there, and its next run clears the flag.") %}
+{% endcall %}
+{{ ui.table([("record", "Record"), ("source_id", "Id in " ~ reg.decl.system), ("seen", "Last seen there"), ("missing", "Missing since")], rows, empty="Nothing is flagged: every record is still in " ~ reg.decl.system ~ ".") }}
+{% endblock %}

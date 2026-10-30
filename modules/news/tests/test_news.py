@@ -2,10 +2,13 @@
 
 from __future__ import annotations
 
+import html
+import re
 import uuid
 from collections.abc import AsyncGenerator
 from contextlib import asynccontextmanager
 from pathlib import Path
+from urllib.parse import unquote
 
 import httpx
 import pytest
@@ -40,6 +43,14 @@ async def running(database_url: str, tmp_path: Path) -> AsyncGenerator[httpx.Asy
             yield c
 
 
+async def button(c: httpx.AsyncClient, slug: str, action: str) -> str:
+    """Where the post page's button for ``action`` posts (with the stamp it shows)."""
+    page = (await c.get(f"/news/p/{slug}")).text
+    m = re.search(rf'action="(/api/news/posts/{slug}/{action}\?[^"]*)"', page)
+    assert m, action
+    return html.unescape(m[1])
+
+
 def test_conformance() -> None:
     assert_conformant(module)
 
@@ -66,7 +77,7 @@ async def test_a_post_is_a_draft_until_a_person_publishes_it(
             assert f"Printers down Friday {tag}" not in (await c.get("/news/")).text
             assert (await c.get(f"/news/p/{slug}")).status_code == 404
         with acting_as(ADMIN):
-            assert (await c.post(f"/api/news/posts/{slug}/publish")).status_code == 303
+            assert (await c.post(await button(c, slug, "publish"))).status_code == 303
         await wait_for_search(module)
         with acting_as(READER):
             page = (await c.get("/news/")).text
@@ -91,10 +102,10 @@ async def test_pinned_posts_come_first_and_archived_ones_leave_the_feed(
             async with module.session() as s:
                 older = await news.create(s, ADMIN, title="Older", category="app",
                                           content=body("one"))  # fmt: skip
-                await news.publish(s, ADMIN, older)
+                await news.publish(s, ADMIN, older, reviewed=None)
                 newer = await news.create(s, ADMIN, title="Newer", category="app",
                                           content=body("two"))  # fmt: skip
-                await news.publish(s, ADMIN, newer)
+                await news.publish(s, ADMIN, newer, reviewed=None)
                 await s.commit()
                 assert [p.title for p in await news.feed(s)] == ["Newer", "Older"]
             await c.post(f"/api/news/posts/{older.slug}/pin")
@@ -129,7 +140,7 @@ async def test_ai_drafts_news_but_never_publishes_or_changes_published_posts(
             async with module.session() as s:
                 post = await news.by_slug(s, "news-is-live")
                 assert post is not None and post.created_via_ai
-                await news.publish(s, ADMIN, post)  # a person publishes
+                await news.publish(s, ADMIN, post, reviewed=None)  # a person publishes
                 await s.commit()
             listed = await mcp.call("news_list_posts", category="app")
             assert [p["title"] for p in listed] == ["News is live"]
@@ -141,3 +152,34 @@ async def test_ai_drafts_news_but_never_publishes_or_changes_published_posts(
         assert sorted(await mcp.tool_names()) == [
             "news_draft_post", "news_get_post", "news_list_posts", "news_update_draft",
         ]  # fmt: skip
+
+
+async def test_publish_and_discard_refuse_a_draft_changed_after_the_page_loaded(
+    database_url: str, tmp_path: Path
+) -> None:
+    """An AI connection can change a draft while a person has it open: Publish then
+    refuses, so nothing goes out unread."""
+    async with running(database_url, tmp_path) as c:
+        mcp = McpClient([module])
+        with acting_as(ADMIN):
+            await mcp.call("news_draft_post", title="Patch night", category="it",
+                           markdown="Servers restart at 22:00.")  # fmt: skip
+            publish = await button(c, "patch-night", "publish")
+            discard = await button(c, "patch-night", "delete")
+            await mcp.call("news_update_draft", slug="patch-night",
+                           markdown="Servers restart at 20:00.")  # fmt: skip
+            for url in (publish, discard):
+                r = await c.post(url, follow_redirects=False)
+                assert r.headers["location"].startswith("/news/p/patch-night?error=Not%20")
+                assert "after you opened it" in unquote(r.headers["location"])
+            async with module.session() as s:
+                post = await news.by_slug(s, "patch-night")
+                assert post is not None and post.status == "draft"
+            # Reloaded, the page shows the change and publishes it.
+            r = await c.post(await button(c, "patch-night", "publish"), follow_redirects=False)
+            assert r.headers["location"] == "/news/p/patch-night"
+            got = await mcp.call("news_get_post", slug="patch-night")
+            assert got["status"] == "published" and "20:00" in got["text"]
+            # The stamp is required: it's how the page says what the person saw.
+            r = await c.post("/api/news/posts/patch-night/publish", follow_redirects=False)
+            assert r.status_code == 422

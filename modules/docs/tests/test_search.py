@@ -37,7 +37,7 @@ async def publish(web: httpx.AsyncClient, title: str, *blocks: object, publish: 
     )
     slug = r.headers["location"].split("/docs/d/")[1].split("?")[0]
     if publish:
-        await web.post(f"/api/docs/documents/{slug}/publish")
+        await web.post(f"/api/docs/documents/{slug}/publish?version=1")
     await wait_for_search(module)
     return slug
 
@@ -66,7 +66,7 @@ async def test_drafts_are_never_searchable(database_url: str, tmp_path: Path) ->
         )
         assert await module.search.query("zebra") == []
         # Publishing makes it searchable; a newer draft doesn't change what's found.
-        await web.post(f"/api/docs/documents/{slug}/publish")
+        await web.post(f"/api/docs/documents/{slug}/publish?version=1")
         await web.post(
             f"/api/docs/documents/{slug}/save",
             data={"content": Content(blocks=[TextBlock(html="<p>giraffe</p>")]).model_dump_json()},
@@ -234,7 +234,7 @@ async def test_attachment_contents_are_searchable_by_page(
                                    b"Call the zanzibarite hotline after hours.", "text/plain")},
         )  # fmt: skip
         slug = r.headers["location"].split("/docs/d/")[1].split("?")[0]
-        await web.post(f"/api/docs/documents/{slug}/publish")
+        await web.post(f"/api/docs/documents/{slug}/publish?version=1")
         await wait_for_search(module)
         hits = await module.search.query("zanzibarite hotline")
         assert [h.title for h in hits] == ["Vendor escalation"]

@@ -1,0 +1,12 @@
+{% extends "core/shell.html" %}
+{% import "core/components.html" as ui %}
+{% block content %}
+{{ ui.breadcrumb([("How-tos", "/kb/"), ("What people said", None)]) }}
+{{ ui.page_header("What people said", "Whether each how-to helped, the least helpful first. Fix those in Docs: what you publish shows here at once.") }}
+{% call ui.card("By how-to") %}
+{{ ui.table([("article", "How-to"), ("helped", "Helped"), ("not_helped", "Didn't help"), ("share", "Helped %")], rows, empty="Nobody has answered yet.") }}
+{% endcall %}
+{% call ui.card("Latest comments") %}
+{{ ui.table([("when", "When"), ("article", "How-to"), ("helped", ""), ("comment", "Comment"), ("who", "Who")], comments, empty="No comments yet.") }}
+{% endcall %}
+{% endblock %}

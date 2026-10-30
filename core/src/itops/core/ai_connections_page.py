@@ -52,6 +52,7 @@ def mount_ai_connections(
             "core/ai_connections.html",
             {
                 "page_title": "AI connections",
+                "current_module": "admin",
                 "oauth_on": oauth is not None,
                 "connection_rows": [
                     {

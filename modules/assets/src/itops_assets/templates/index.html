@@ -2,17 +2,16 @@
 {% import "core/components.html" as ui %}
 {% block content %}
 {% call ui.page_header("Assets", "IT inventory: devices, certificates, contacts, locations, domains and IP addresses.") %}
-  {{ ui.button("Search", href="/search") }}
-  {% if can_manage_types %}{{ ui.button("Manage types", href="/assets/types") }}{% endif %}
+  {{ ui.button("Devices", href="/assets/t/device", variant="primary") }}
+  {% if has_targets %}{{ ui.button("OS readiness", href="/assets/readiness") }}{% endif %}
+  {{ ui.button("Computer classes", href="/assets/classes") }}
+  {% if can_manage_types %}{{ ui.button("Manage types", href="/assets/types", variant="ghost") }}{% endif %}
 {% endcall %}
 {% if error %}{{ ui.alert(error, "danger") }}{% endif %}
-{% if pending %}
-  {% call ui.card("Waiting for approval") %}
-    <p>{{ pending }} proposed change{{ "s" if pending != 1 }} from AI {{ "are" if pending != 1 else "is" }} waiting for a person to approve or reject.</p>
-    <div class="actions">{{ ui.button("Review proposals", href="/assets/proposals", variant="primary") }}</div>
-  {% endcall %}
-{% endif %}
-{% call ui.card() %}
+{% call ui.card("To review") %}
+  {{ ui.table([("what", "What"), ("count", "How many"), ("about", "")], review) }}
+{% endcall %}
+{% call ui.card("Asset types") %}
   {{ ui.table([("type", "Type"), ("count", "Records"), ("about", "About")], rows, empty="No asset types yet.") }}
 {% endcall %}
 {% endblock %}

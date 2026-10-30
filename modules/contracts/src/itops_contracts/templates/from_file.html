@@ -16,10 +16,10 @@
     <p class="muted">A local AI model is reading the file; this usually takes one to three minutes. This page updates by itself.</p>
   {% endcall %}
 {% elif run.status == "failed" %}
-  {{ ui.alert("Couldn't read the file: " ~ run.error, "danger") }}
+  {{ ui.alert("Couldn't read the file (" ~ run.error ~ "), so nothing was suggested. Try a PDF or Word copy of it, or fill the contract in by hand.", "danger") }}
   <div class="actions">{{ ui.button("Fill it in yourself", href="/contracts/new", variant="primary") }}</div>
 {% elif run.status == "reviewed" %}
-  {{ ui.alert("A contract was already created from this file. Find it under Contracts.", "info") }}
+  {{ ui.alert("This file was already dealt with: a contract was created from it (find it under Contracts), or it was discarded.", "info") }}
   <div class="actions">{{ ui.button("Contracts", href="/contracts/") }}</div>
 {% else %}
   {% call(part) ui.review_layout() %}
@@ -57,7 +57,9 @@
       <div class="actions">
         {{ ui.button("Create the contract", type="submit", variant="primary") }}
         {{ ui.button("Cancel", href="/contracts/") }}
+        {{ ui.button("Discard this file", type="submit", variant="ghost", attrs={"formaction": "/api/contracts/from-file/" ~ run.id ~ "/discard", "formnovalidate": True}) }}
       </div>
+      <p class="muted">Cancel keeps it waiting for you on Contracts. Discard if it isn't a contract: nothing is created.</p>
       {% if run.dropped %}<p class="muted">{{ run.dropped }} more answer(s) were left out: their quote wasn't in the file or didn't contain the value.</p>{% endif %}
       <p class="muted">Read by {{ run.model or "a local model" }}. Nothing is saved until you create the contract.</p>
     </form>

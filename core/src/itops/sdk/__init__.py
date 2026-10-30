@@ -175,6 +175,9 @@ class SourceLink:
     last_seen: Any
     missing_since: Any
     owned: frozenset[str]
+    source_type: str = ""
+    source_id: str = ""
+    seen_this_run: bool = False  # by the connector run calling in, this run
 
 
 @dataclass(frozen=True)
@@ -260,6 +263,14 @@ class AI:
             self._module.name, entity_type, entity_id
         )
 
+    async def my_runs_to_review(self) -> list[SuggestionRun]:
+        """The current person's finished runs they haven't reviewed yet (for *Waiting for
+        you*), newest first."""
+        who = auth.current()
+        if who is None:
+            return []
+        return await self._module.runtime.suggestions.to_review(self._module.name, who.user)
+
     async def suggestions_reviewed(self, run_id: int, accepted: dict[str, Any]) -> None:
         """Record what a person accepted ({key: value saved}); audit it in your module too."""
         who = auth.current()
@@ -330,7 +341,8 @@ class Files:
         async with self._module.session() as s:
             row = await rt.files.get(s, file_id)
             visible = rt.registry.get(f"{row.module}.visible_entity") if row else None
-            if row is None or not await may_read(row, principal, visible):
+            shared = rt.registry.get(f"{row.module}.shared_file_permission") if row else None
+            if row is None or not await may_read(row, principal, visible, shared):
                 raise FileRejected(f"No file {file_id!r} you can read.")
             stored = await rt.files.copy(
                 s, row, module=self._module.name,
@@ -376,7 +388,8 @@ class Files:
             return []
         if row.module != self._module.name:
             visible = rt.registry.get(f"{row.module}.visible_entity")
-            if not await may_read(row, auth.current(), visible):
+            shared = rt.registry.get(f"{row.module}.shared_file_permission")
+            if not await may_read(row, auth.current(), visible, shared):
                 return []
         return await rt.files.text(session, row)
 
@@ -455,12 +468,14 @@ class Search:
         passages: Iterable[Passage],
         read_permission: str | None = None,
         archived: bool = False,
-        area: tuple[str, str] | None = None,
+        area: tuple[str, str] | str | None = None,
     ) -> int:
         """Replace what's indexed for one entity. ``path`` is inside this module
         (``/d/<slug>`` becomes ``/docs/d/<slug>``). Readers need ``read_permission``.
         ``area``: (kind, key) of the area it's in (ADR 0012), so searches leave it out for
-        people who can't see that area. Re-index when it moves to another area."""
+        people who can't see that area. Re-index when it moves to another area. An entity
+        shown from another module's data may carry that module's area: pass the id it
+        handed over ('<module>:<kind>:<key>', e.g. a Docs how-to's audience, ADR 0028)."""
         return await self._module.runtime.search.replace(
             session,
             module=self._module.name,
@@ -471,8 +486,19 @@ class Search:
             read_permission=self._perm(read_permission),
             passages=passages,
             archived=archived,
-            area=self._module.areas.id(*area) if area else None,
+            area=self._area(area),
         )
+
+    def _area(self, area: tuple[str, str] | str | None) -> str | None:
+        if area is None:
+            return None
+        if not isinstance(area, str):
+            return self._module.areas.id(*area)
+        owner, _, rest = area.partition(":")
+        kind, _, key = rest.partition(":")
+        if not key or kind not in self._module.runtime.areas.kinds.get(owner, {}):
+            raise ValueError(f"{self._module.name}: {area!r} isn't an area any module declared")
+        return area
 
     async def remove(self, session: AsyncSession, *, kind: str, entity_id: str) -> None:
         await self._module.runtime.search.remove(
@@ -798,7 +824,8 @@ class Refs:
 
     **During a dry run (``run.dry_run``) an upsert service must not write anything.**
     Pages use ``links(kind, id)`` to show "Synced from ..." and ``owned_fields(kind, id)``
-    to make the fields a connector owns read-only.
+    to make the fields a connector owns read-only; a list of many records uses
+    ``systems(kind)`` (one query).
     """
 
     def __init__(self, module: Module) -> None:
@@ -869,8 +896,12 @@ class Refs:
                 s, module=self._module.name, entity_kind=kind, entity_id=str(entity_id)
             )
         out: list[SourceLink] = []
+        run = current_run()
         for r in refs:
             reg = runtime.connectors.get(r.connector)
+            this_run = (
+                run is not None and r.connector == run.connector and (r.last_run_id == run.run_id)
+            )
             out.append(
                 SourceLink(
                     connector=r.connector,
@@ -881,9 +912,52 @@ class Refs:
                     owned=runtime.connectors.owned_fields(
                         r.connector, f"{self._module.name}.{kind}"
                     ),
+                    source_type=r.source_type,
+                    source_id=r.source_id,
+                    seen_this_run=this_run,
                 )
             )
         return out
+
+    async def systems(self, kind: str) -> dict[str, list[str]]:
+        """For a list of many records at once: {record id: the systems that sync it} (each
+        connector's ``system``, e.g. "Active Directory", sorted), counting only sources that
+        still list the record. Only installed connectors that say whether a record exists
+        count: one that only adds to records others found (``missing = "ignore"``, e.g. a
+        warranty lookup) doesn't. Records nothing syncs are left out."""
+        runtime = self._module.runtime
+        async with self._module.session() as s:
+            found = await runtime.refs.live_for_kind(s, module=self._module.name, entity_kind=kind)
+        out: dict[str, set[str]] = {}
+        for entity_id, connector in found:
+            reg = runtime.connectors.get(connector)
+            if reg is not None and reg.decl.missing != "ignore":
+                out.setdefault(entity_id, set()).add(reg.decl.system)
+        return {k: sorted(v) for k, v in out.items()}
+
+    async def release(self, session: AsyncSession, source_type: str, source_id: str) -> None:
+        """Forget this connector's reference to a source record that another one replaced
+        (the source re-created it under a new id), so the record isn't flagged as gone."""
+        run = self._require_run()
+        if run.dry_run:
+            raise ConnectorError("a dry run must not write (check module.refs.run.dry_run)")
+        ref = await self.find(session, source_type, source_id)
+        if ref is not None:
+            await self._module.runtime.refs.release(session, ref.id)
+
+    async def move(self, session: AsyncSession, kind: str, from_id: str, to_id: str) -> int:
+        """Point every source reference to this module's record ``from_id`` at ``to_id``: a
+        person merged two records that are one thing, so the next sync of each source still
+        finds it. References already flagged missing (their source record is gone) are
+        forgotten, not moved. Works outside a connector run; the module's service decides
+        who may. Returns how many moved."""
+        run = current_run()
+        if run is not None and run.dry_run:
+            raise ConnectorError("a dry run must not write (check module.refs.run.dry_run)")
+        return await self._module.runtime.refs.move(
+            session, module=self._module.name, entity_kind=kind, from_id=str(from_id),
+            to_id=str(to_id),
+        )  # fmt: skip
 
     async def owned_fields(self, kind: str, entity_id: str) -> frozenset[str]:
         """Fields of this record that a connector owns (read-only for people and AI)."""
@@ -1108,11 +1182,25 @@ class Module:
         return self.absolute_url(f"/{self.name}{path if path.startswith('/') else '/' + path}")
 
     def absolute_url(self, site_path: str) -> str:
-        """Absolute browser URL for a site path, e.g. a search hit's ``url``."""
-        return self.runtime.settings.public_url.rstrip("/") + site_path
+        """Absolute browser URL for a site path, e.g. a search hit's ``url``: on this module's
+        site (ADR 0027) when it belongs to one."""
+        settings = self.runtime.settings
+        site = settings.sites.get(self.manifest.site) if self.manifest.site else None
+        return (site.url if site else settings.public_url).rstrip("/") + site_path
 
     def current_principal(self) -> Principal | None:
         return auth.current()
+
+    def review(self, path: str, what: str = "it") -> dict[str, str]:
+        """What an AI tool returns once it has drafted or proposed something: where a person
+        reviews it (``review_url``) and the line to pass on (``next``). Every module says it
+        the same way; the item is also on that person's *Waiting for you*."""
+        url = self.url(path)
+        return {
+            "review_url": url,
+            "next": f"Waiting for a person to review {what}: tell the user to open {url} "
+            "(it's also under Waiting for you on the IT-Ops home page). You can't approve it.",
+        }
 
     def publish(self, event: str, payload: dict[str, Any]) -> Event:
         """Publish ``"<module>.<event>"``. The event must be declared in the manifest."""

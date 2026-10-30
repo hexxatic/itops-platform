@@ -1,0 +1,22 @@
+{#- Budget proposals from AI (context: proposals, can_approve). -#}
+{% for p in proposals %}
+{% call ui.card(p.title) %}
+<div class="stack">
+  <p class="muted">Proposed by {{ p.by }} · {{ p.when }}</p>
+  {% if p.note %}<p>{{ p.note }}</p>{% endif %}
+  {% if p.is_change %}
+    {{ ui.table([("field", "Field"), ("before", "Now"), ("after", "Proposed")], p.rows, empty="No differences from now.") }}
+  {% else %}
+    {{ ui.table([("field", "Field"), ("after", "Value")], p.rows) }}
+  {% endif %}
+  {% if can_approve %}
+  <div class="actions">
+    {{ ui.action_button("Approve", "/api/budget/proposals/" ~ p.id ~ "/approve", variant="primary") }}
+    {{ ui.action_button("Reject", "/api/budget/proposals/" ~ p.id ~ "/reject", variant="danger") }}
+  </div>
+  {% else %}
+  <p class="muted">Someone who can adopt budget versions approves or rejects it.</p>
+  {% endif %}
+</div>
+{% endcall %}
+{% endfor %}

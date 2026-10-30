@@ -1,0 +1,23 @@
+{% extends "core/shell.html" %}
+{% import "core/components.html" as ui %}
+{% block content %}
+{{ ui.breadcrumb([("Docs", "/docs/"), ("Collections", "/docs/collections"), ("Help-site audiences", "/docs/audiences"), (audience.name, None)]) }}
+{% call ui.page_header(audience.name, audience.description) %}
+  {{ ui.action_button("Delete", "/api/docs/audiences/" ~ audience.id ~ "/delete", variant="danger",
+                      confirm="Delete this audience?") }}
+{% endcall %}
+{% if error %}{{ ui.alert(error, "danger") }}{% endif %}
+{% if not access.restricted %}{{ ui.alert("No AD groups yet: its documents are shown to everyone on the help site. Change access below to give it its groups.", "warning") }}{% endif %}
+{% call ui.card("Who sees its documents") %}{{ ui.access_summary(access) }}{% endcall %}
+{% call ui.card("Documents (" ~ documents|length ~ ")") %}
+  {{ ui.link_list(documents, empty="No documents are for this audience yet. Choose it under Help site on a document's page.") }}
+{% endcall %}
+{% call ui.card("Name and description") %}
+<form method="post" action="/api/docs/audiences/{{ audience.id }}" class="stack">
+  {{ ui.field("name", "Name", value=name, required=True) }}
+  {{ ui.field("description", "Description", value=description) }}
+  <div class="row">{{ ui.button("Save", type="submit", variant="primary") }}</div>
+</form>
+{% endcall %}
+{% call ui.disclosure("Activity (" ~ activity|length ~ ")") %}{{ ui.activity(activity) }}{% endcall %}
+{% endblock %}

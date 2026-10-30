@@ -3,7 +3,9 @@
 Tools run *via AI* as the connected user, so only people who can see contracts get
 anything. They answer what a contract is, when it ends and who owns it, but **never what it
 costs** (costs don't go to AI connections, ADR 0014). They can draft a contract and change
-drafts; a person accepts it. Renewing, cancelling and archiving are human-only.
+drafts; a person accepts it. They can **propose** a term's cost and rates without seeing
+the current ones (write-only; ADR 0014 amended 2026-10-28): a person who can see costs
+applies it. Renewing, cancelling and archiving are human-only.
 """
 
 from __future__ import annotations
@@ -14,12 +16,13 @@ from typing import Any
 from itops.sdk import Principal
 from itops_contracts import service
 from itops_contracts.app import module
-from itops_contracts.models import Contract, Term
+from itops_contracts.models import Contract, Proposal, Term
 from itops_contracts.service import (
     CATEGORIES,
     STATES,
     ContractInput,
     ContractsError,
+    RateInput,
     TermInput,
     cancel_by,
     contract_links,
@@ -29,8 +32,8 @@ DRAFT_HELP = (
     "`category`: one of " + ", ".join(f"'{k}' ({v})" for k, v in CATEGORIES.items()) + ". "
     "`starts_on` / `ends_on`: the current term, as YYYY-MM-DD. `notice_days`: how long before "
     "the end the vendor must be told (0 if none). `owner`: the owner's email (UPN), someone "
-    "who can see contracts; leave it out if unsure. Costs aren't taken or shown: a person "
-    "adds the price in IT-Ops."
+    "who can see contracts; leave it out if unsure. Costs aren't taken or shown here: propose "
+    "them with contracts_propose_costs."
 )
 
 
@@ -73,7 +76,9 @@ async def list_contracts(query: str = "", category: str | None = None) -> list[d
 @module.tool(permission="contracts.read")
 async def renewals_due(within_days: int = 120) -> list[dict[str, Any]]:
     """Contracts coming up for renewal: undecided ones whose cancel-by date is within
-    `within_days` (or already past: `days_left` negative), soonest first."""
+    `within_days` (or already past: `days_left` negative), soonest first. A person who can
+    approve contracts decides each one (Renew, or Not renewing) on the contract's page, its
+    `url`; you can't decide."""
     async with module.session() as s:
         coming = await service.upcoming(s, within_days=max(0, min(within_days, 730)))
     return [{**_summary(u.contract, u.term), "days_left": u.days_left} for u in coming]
@@ -123,7 +128,7 @@ async def draft_contract(
     seats_bought: int | None = None,
 ) -> dict[str, Any]:
     """Draft a new contract with its current term. It stays a DRAFT until a person accepts it
-    in IT-Ops; tell the user the returned `url` to review it."""
+    in IT-Ops; pass on the returned `next` (it has the `review_url`)."""
     data = ContractInput(
         name=name,
         category=category,
@@ -138,7 +143,7 @@ async def draft_contract(
         c = await service.create(s, _who(), data, term)
         await s.commit()
         result = _summary(c, await service.current_term(s, c.id))
-    return {**result, "next": f"Draft saved. A person reviews and accepts it: {result['url']}"}
+    return {**result, **module.review(f"/c/{c.id}", "the draft")}
 
 
 async def update_draft(
@@ -186,7 +191,74 @@ async def update_draft(
         await service.update_term(s, _who(), c, t, term)
         await s.commit()
         result = _summary(c, t)
-    return {**result, "next": f"Draft saved. A person reviews and accepts it: {result['url']}"}
+    return {**result, **module.review(f"/c/{c.id}", "the draft")}
+
+
+@module.tool(permission="contracts.write", writes=True)
+async def propose_costs(
+    contract_id: str,
+    note: str,
+    cost: str | None = None,
+    cost_period: str | None = None,
+    rates: list[dict[str, Any]] | None = None,
+) -> dict[str, Any]:
+    """Propose what a contract's current term costs: its `cost` (dollars, e.g. "1061.81") per
+    `cost_period` ('month', 'year' or 'once'), its usage `rates`, or both. Works on drafts
+    too. Nothing changes until a person who can see contract costs applies it; tell the user
+    the returned `review_url`. You can't see costs, the current ones or what you proposed
+    before, so give the full set each time.
+
+    `rates`, when given, replaces the term's whole rate list: each {"item": what's charged
+    for, e.g. "B&W page" or "AltaLink C8255 colour page", "price": the price of one in
+    dollars, up to five decimal places, e.g. "0.0099", "included_per_month": how many a month
+    the term includes (optional)}. `note` says where the numbers come from (document, page),
+    for the person who checks them."""
+    given = None
+    if rates is not None:
+        given = [RateInput(str(r.get("item", "")), r.get("price"),
+                           r.get("included_per_month")) for r in rates]  # fmt: skip
+    async with module.session() as s:
+        c = await service.get(s, contract_id)
+        if c is None:
+            raise ContractsError(f"No contract {contract_id!r}. Use list_contracts to find it.")
+        t = await service.current_term(s, c.id)
+        if t is None:
+            raise ContractsError("That contract has no term to price.")
+        p = await service.propose_costs(s, _who(), c, t, cost=cost, cost_period=cost_period,
+                                        rates_given=given, note=note)  # fmt: skip
+        await s.commit()
+        result = _proposal(p, t, c)
+    return {**result, **module.review("/proposals", "the proposal")}
+
+
+def _proposal(p: Proposal, t: Term, c: Contract) -> dict[str, Any]:
+    return {
+        "proposal": p.id,
+        "contract": c.name,
+        "contract_id": str(c.id),
+        "term": f"{t.starts_on} to {t.ends_on}",
+        "proposes": service.proposal_what(p),
+        "status": service.PROPOSAL_STATES[p.status],
+        "proposed_by": p.proposed_by,
+        "proposed_at": p.proposed_at.isoformat(timespec="minutes"),
+        "decided_by": p.decided_by,
+    }
+
+
+@module.tool(permission="contracts.read")
+async def list_cost_proposals(contract_id: str | None = None) -> list[dict[str, Any]]:
+    """Proposed contract costs and what became of them (Waiting, Applied, Rejected), newest
+    first, optionally for one contract: which contract and term, what it proposes, who
+    proposed it and who decided. Never the amounts."""
+    async with module.session() as s:
+        cid = None
+        if contract_id is not None:
+            c = await service.get(s, contract_id)
+            if c is None:
+                raise ContractsError(f"No contract {contract_id!r}.")
+            cid = c.id
+        found = await service.proposals(s, status=None, contract_id=cid, limit=50)
+    return [_proposal(p, t, c) for p, t, c in found]
 
 
 # Registered here so their descriptions carry the drafting guidance.

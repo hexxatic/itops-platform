@@ -1,0 +1,20 @@
+{% extends "core/shell.html" %}
+{% import "core/components.html" as ui %}
+{% block content %}
+{{ ui.breadcrumb([("Assets", "/assets/"), ("Sources disagree", None)]) }}
+{% call ui.page_header("Sources disagree", "Devices where a scan, Sophos, Active Directory and the device's status don't line up. The device itself (a scan or Sophos) is trusted over AD. Fixing these firms up the budget and every count that asks what's in use.") %}{% endcall %}
+{% call ui.card() %}
+  {{ ui.table([("name", "Device"), ("kind", "Kind"), ("status", "Status"), ("why", "What doesn't line up, and what to do")], rows, empty="Every source agrees.") }}
+{% endcall %}
+{% if accepted_count %}
+  {% if show_accepted %}
+  {% call ui.card("Accepted as expected (" ~ accepted_count ~ ")") %}
+    {{ ui.table([("name", "Device"), ("why", "Warning"), ("reason", "Why it's expected"), ("by", "Accepted by")], accepted) }}
+    <p class="muted">Each shows again when something about it changes. To show one again now, open the device.</p>
+  {% endcall %}
+  {% else %}
+  <p class="muted">{{ accepted_count }} accepted as expected are hidden. <a href="/assets/disagreements?accepted=1">Show them</a></p>
+  {% endif %}
+{% endif %}
+<p class="muted">In use means seen within {{ days }} days. Scans: an inventory sync's Last seen on the network. AD: Last signed in (AD) and AD account.</p>
+{% endblock %}

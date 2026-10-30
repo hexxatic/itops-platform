@@ -70,3 +70,34 @@ class Term(Base):
     overdue_notified_on: Mapped[dt.date | None] = mapped_column(Date, default=None)
     created_by: Mapped[str] = mapped_column(Unicode(200))
     created_at: Mapped[dt.datetime] = mapped_column(DateTime, default=lambda: utcnow())
+
+
+class Rate(Base):
+    """What a term charges for each one used (a B&W page), and how many a month it includes."""
+
+    __tablename__ = "rates"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    term_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("contracts.terms.id"))
+    position: Mapped[int] = mapped_column(Integer)
+    item: Mapped[str] = mapped_column(Unicode(200))
+    price: Mapped[Decimal] = mapped_column(Numeric(15, 5))
+    included_per_month: Mapped[int | None] = mapped_column(Integer, default=None)
+
+
+class Proposal(Base):
+    """A term's cost and rates as proposed (by AI, or someone who can't see costs), until a
+    person who can see costs applies or rejects it."""
+
+    __tablename__ = "proposals"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    term_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("contracts.terms.id"))
+    data: Mapped[str] = mapped_column(UnicodeText)  # JSON {cost, cost_period, rates}
+    note: Mapped[str] = mapped_column(Unicode(1000), default="")
+    status: Mapped[str] = mapped_column(Unicode(20), default="pending")
+    proposed_by: Mapped[str] = mapped_column(Unicode(200))
+    proposed_via_ai: Mapped[bool] = mapped_column(Boolean, default=False)
+    proposed_at: Mapped[dt.datetime] = mapped_column(DateTime, default=lambda: utcnow())
+    decided_by: Mapped[str | None] = mapped_column(Unicode(200), default=None)
+    decided_at: Mapped[dt.datetime | None] = mapped_column(DateTime, default=None)

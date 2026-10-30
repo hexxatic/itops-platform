@@ -1,0 +1,18 @@
+{% extends "core/shell.html" %}
+{% import "core/components.html" as ui %}
+{% block content %}
+{{ ui.breadcrumb([("Contracts", "/contracts/"), ("Proposed costs", None)]) }}
+{{ ui.page_header("Proposed costs", "Costs and rates proposed by AI connections, which never see what contracts cost. Check each against its contract, then apply or reject it.") }}
+{% if error %}{{ ui.alert(error, "danger") }}{% endif %}
+{% if proposals %}
+  {% set back = "list" %}
+  {% include "contracts/proposals_list.html" %}
+{% else %}
+  {{ ui.empty_state("Nothing waiting.", "Costs and rates proposed through the AI tools show up here.") }}
+{% endif %}
+{% if decided %}
+{% call ui.disclosure("Decided (" ~ decided|length ~ ")") %}
+  {{ ui.table([("contract", "Contract"), ("what", "Proposed"), ("by", "By"), ("when", "When"), ("status", "Outcome"), ("decided", "Decided by")], decided) }}
+{% endcall %}
+{% endif %}
+{% endblock %}

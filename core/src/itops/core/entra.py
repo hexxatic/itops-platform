@@ -14,7 +14,7 @@ import asyncio
 import warnings
 from collections.abc import Callable
 from dataclasses import replace
-from typing import Any, cast
+from typing import TYPE_CHECKING, Any, cast
 from urllib.parse import quote, urlsplit
 
 from starlette.requests import Request
@@ -22,9 +22,13 @@ from starlette.responses import HTMLResponse, JSONResponse, RedirectResponse, Re
 from starlette.types import ASGIApp, Receive, Scope, Send
 
 from itops.core import auth
+from itops.core.apps import APP_TOKEN_PREFIX, AppTokens
 from itops.core.config import Settings
-from itops.core.identity import Identity, User, group_names, roles_from_groups
+from itops.core.identity import Identity, User, group_names, real_groups, roles_from_groups
 from itops.core.theme import parse_appearance
+
+if TYPE_CHECKING:
+    from itops.core.sites import Sites
 
 # The MCP surface of ADR 0013: the endpoint, the OAuth endpoints and their discovery
 # documents. The only paths that answer on the public MCP host.
@@ -32,7 +36,8 @@ MCP_PATHS = (
     "/mcp", "/authorize", "/token", "/register", "/revoke",
     "/.well-known/oauth-protected-resource", "/.well-known/oauth-authorization-server",
 )  # fmt: skip
-PUBLIC_PREFIXES = ("/health", "/static/", "/theme/", "/auth/", "/favicon.ico")
+PUBLIC_PREFIXES = ("/health", "/static/", "/theme/", "/auth/", "/favicon.ico",
+                   "/manifest.webmanifest")  # fmt: skip
 
 
 def is_mcp_path(path: str) -> bool:
@@ -60,12 +65,23 @@ def _safe_next(target: str | None) -> str:
 
 
 class EntraAuth:
-    def __init__(self, settings: Settings, identity: Identity, message: Message) -> None:
+    def __init__(
+        self,
+        settings: Settings,
+        identity: Identity,
+        message: Message,
+        base_url: Callable[[], str] | None = None,
+    ) -> None:
         self.settings = settings
         self.identity = identity
         self.message = message
-        self.redirect_uri = settings.public_url.rstrip("/") + "/auth/callback"
+        # The address of the site being signed in to (ADR 0027), IT-Ops' own by default.
+        self.base_url = base_url or (lambda: settings.public_url.rstrip("/"))
         self._msal: Any = None
+
+    @property
+    def redirect_uri(self) -> str:
+        return self.base_url() + "/auth/callback"
 
     def _app(self) -> Any:
         if self._msal is None:
@@ -129,7 +145,7 @@ class EntraAuth:
                 request,
                 "You're signed in, but not set up for IT-Ops yet",
                 "Ask an IT-Ops admin to add you to one of the IT-Ops groups "
-                f"({', '.join(self.settings.role_groups.values())}).",
+                f"({', '.join(real_groups(self.settings.role_groups))}).",
             )
         user = replace(_user(claims, tuple(roles)), groups=group_names(groups))
         appearance = await self.identity.record_sign_in(user)
@@ -179,7 +195,7 @@ external_redirect = _external_redirect
 LOOPBACK = ("127.0.0.1", "::1")
 
 
-def _public_host(scope: Scope, request: Request) -> str:
+def public_host(scope: Scope, request: Request) -> str:
     """The name the browser used. Behind the IIS reverse proxy (same machine) the Host
     header is the loopback address and the real name arrives as X-Forwarded-Host; that
     header is only trusted from loopback, so nobody can spoof it from outside."""
@@ -209,11 +225,20 @@ class AuthGate:
     """Pure ASGI middleware (so the principal is set in the same task as the handler).
     Must sit inside SessionMiddleware."""
 
-    def __init__(self, app: ASGIApp, settings: Settings, identity: Identity) -> None:
+    def __init__(
+        self,
+        app: ASGIApp,
+        settings: Settings,
+        identity: Identity,
+        apps: AppTokens | None = None,
+        sites: Sites | None = None,
+    ) -> None:
         self.app = app
         self.settings = settings
         self.identity = identity
+        self.apps = apps
         self.public_host = urlsplit(settings.public_url).netloc
+        self.site_hosts = sites.hosts if sites else set[str]()
         mcp_host = urlsplit(settings.mcp_public_url).netloc if settings.mcp_public_url else ""
         # Only a separate public host is restricted (the same host would lock out the site).
         self.mcp_host = mcp_host if mcp_host != self.public_host else ""
@@ -224,9 +249,9 @@ class AuthGate:
             return
         path: str = scope["path"]
         request = Request(scope)
-        host = _public_host(scope, request)
+        host = public_host(scope, request)
         full = path + (f"?{scope['query_string'].decode()}" if scope["query_string"] else "")
-        other_host = host and host != self.public_host
+        other_host = host and host != self.public_host and host.lower() not in self.site_hosts
         # With a public MCP host, anything that came through Cloudflare (it stamps every
         # request) is public too, whatever name it asked for.
         through_cloudflare = bool(self.settings.mcp_public_url) and "cf-ray" in request.headers
@@ -248,8 +273,18 @@ class AuthGate:
 
         principal: auth.Principal | None = None
         header = request.headers.get("authorization", "")
-        if header.lower().startswith("bearer "):
-            user = await self.identity.user_for_token(header[7:].strip())
+        token = header[7:].strip() if header.lower().startswith("bearer ") else ""
+        if token.startswith(APP_TOKEN_PREFIX) and self.apps is not None:
+            # An app acting as itself (ADR 0021): the REST API and the files its reads link
+            # to (checked like anyone's), never the web pages.
+            principal = await self.apps.principal_for(token)
+            files = path.startswith("/files/") and request.method == "GET"
+            if principal is None or not (path.startswith("/api/") or files):
+                denied = JSONResponse({"detail": "Invalid or expired token"}, 401)
+                await denied(scope, receive, send)
+                return
+        elif header.lower().startswith("bearer "):
+            user = await self.identity.user_for_token(token)
             if user is None:
                 denied = JSONResponse({"detail": "Invalid or expired token"}, 401)
                 await denied(scope, receive, send)

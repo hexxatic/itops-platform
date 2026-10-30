@@ -1,6 +1,7 @@
 {% extends "core/shell.html" %}
 {% import "core/components.html" as ui %}
 {% block content %}
+{{ ui.breadcrumb([("Admin", "/admin"), ("Audit trail", None)]) }}
 {{ ui.page_header("Audit trail", "Who did what, in every module. Entries can't be changed or removed.") }}
 
 <form method="get" action="/audit" class="row filter-bar">

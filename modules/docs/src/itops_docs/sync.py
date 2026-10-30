@@ -236,7 +236,7 @@ async def _go_live(
     if not who.has("docs.publish"):
         return "Imported as a draft: the connector lacks docs.publish."
     try:
-        await service.publish(s, who, doc)
+        await service.publish(s, who, doc, version=None)  # the version it just saved
     except DocsError as exc:
         return f"Imported as a draft: {exc}"
     if archived:
